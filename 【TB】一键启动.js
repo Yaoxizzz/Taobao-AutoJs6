@@ -1,7 +1,7 @@
 /**
- * @name 淘宝助手_启动器 V7.0
+ * @name 淘宝助手_启动器
  * @version 7.0.0
- * @description 全自动模式：启动即运行 -> 执行任务 -> 自动退出
+ * @description 开局即跑：加载模块 -> 启动APP -> 执行任务 -> 自动退出
  */
 
 // 1. 导入模块
@@ -12,7 +12,7 @@ var SignTask = require('./modules/SignTask.js');
 // 2. 主流程
 function main() {
     try {
-        // 初始化 (显示悬浮窗)
+        // 初始化 (会显示 "淘宝助手运行中" 的小悬浮窗)
         Utils.init();
         
         // 启动应用
@@ -36,7 +36,8 @@ function main() {
         console.error(e);
     } finally {
         sleep(2000);
-        exit(); // 任务结束，自动退出脚本
+        // 任务结束，自动彻底退出脚本，悬浮窗随之消失
+        exit(); 
     }
 }
 
