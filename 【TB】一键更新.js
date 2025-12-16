@@ -1,7 +1,7 @@
 /**
  * @name 【TB】一键更新
- * @version 8.0.0
- * @description 修复报错 | 自动拉取公益节点 | 自身热修复 | 纯净退出
+ * @version 7.0.0
+ * @description 核心更新器：拉取公益节点 + 自身热更新 + 纯净退出
  */
 
 // ================= 用户配置 =================
@@ -9,14 +9,15 @@ const CONFIG = {
     user: "Yaoxizzz",
     repo: "Taobao-AutoJs6",
     branch: "main",
-    // 强制安装路径 (所有文件都会被下载到这里)
     installDir: "/sdcard/脚本/淘宝全能助手/", 
-    // 更新器自身的文件名 (必须与本地一致)
-    selfName: "【TB】一键更新.js" 
+    selfName: "【TB】一键更新.js", 
+
+    // [Fix] 默认不弹出控制台悬浮窗，避免你看到“两个悬浮窗”
+    showConsole: false
 };
 
-// 业务文件清单 [远程路径, 本地路径]
-// 远程路径要和GitHub仓库结构保持一致
+// 业务文件清单 [远程文件名, 本地文件名]
+// 本地文件名我做了规范化处理，方便 modules 调用
 const TASK_FILES = [
     ["【TB】项目配置.json", "project.json"],
     ["【TB】一键启动.js", "main.js"],
@@ -25,10 +26,10 @@ const TASK_FILES = [
     ["modules/SignTask.js", "modules/SignTask.js"]
 ];
 
-// 种子节点 (用于拉取更大的梯子列表)
+// 种子节点 (用于拉取更大的梯子)
 const SEED_MIRRORS = [
-    "https://mirror.ghproxy.com/",
     "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
     "https://github.moeyy.xyz/",
     "https://raw.githubusercontent.com/"
 ];
@@ -41,33 +42,33 @@ importClass(okhttp3.OkHttpClient);
 importClass(okhttp3.Request);
 importClass(java.util.concurrent.TimeUnit);
 
-// 1. 悬浮窗 UI (单例模式)
-var win = null;
+// 悬浮窗 UI
+var win = floaty.rawWindow(
+    <card cardCornerRadius="8dp" cardElevation="6dp" bg="#1A1A1A" w="300dp">
+        <vertical padding="12">
+            <text text="★ 脚本检查更新 ★" textSize="14sp" textColor="#FFD700" textStyle="bold" gravity="center"/>
+            <text id="status" text="正在初始化..." textSize="11sp" textColor="#00FF00" marginTop="8" maxLines="10"/>
+            <progressbar id="progress" w="*" h="2dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="8"/>
+        </vertical>
+    </card>
+);
+win.setPosition(device.width/2 - 150, device.height/4);
+win.setTouchable(false);
 
-function showUI() {
-    if(win) return;
-    win = floaty.rawWindow(
-        <card cardCornerRadius="8dp" cardElevation="6dp" bg="#222222" w="280dp">
-            <vertical padding="15">
-                <text text="★ 脚本智能更新 V8.0 ★" textSize="14sp" textColor="#FFD700" textStyle="bold" gravity="center"/>
-                <text id="status" text="正在初始化..." textSize="11sp" textColor="#00FF00" marginTop="10" maxLines="8" ellipsize="end"/>
-                <progressbar id="progress" w="*" h="3dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="10"/>
-            </vertical>
-        </card>
-    );
-    win.setPosition(device.width/2 - 140, device.height/3);
-    win.setTouchable(false);
-}
+// [Fix] 兜底：脚本结束/异常时，强制关闭悬浮窗（解决“消除不掉”）
+events.on("exit", function() {
+    try { if (win) win.close(); } catch (e) {}
+    try { console.hide(); } catch (e) {}
+});
 
-function updateLog(msg) {
+function log(msg) {
     let t = new Date();
     let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
-    console.log(msg); 
+    console.log(msg);
     ui.run(() => {
         if (win && win.status) {
             let old = win.status.getText();
             win.status.setText(old + "\n" + msg);
-            // 保持显示最新的几行
             if(win.status.getLineCount() > 8) {
                 win.status.setText(msg); 
             }
@@ -75,28 +76,66 @@ function updateLog(msg) {
     });
 }
 
-// 强制关闭UI (防止双窗口)
-function closeUI() {
-    if(win) {
-        win.close();
-        win = null;
-    }
-    console.hide();
+// [Fix] 兼容不同 Auto.js/AutoX 版本：有的引擎没有 getSourceFile()
+function getCurrentScriptPath(fallbackPath) {
+    try {
+        let eng = engines.myEngine();
+        if (!eng) return fallbackPath;
+
+        // Auto.js 某些版本存在
+        if (typeof eng.getSourceFile === "function") {
+            let f = eng.getSourceFile();
+            if (f && typeof f.getPath === "function") return f.getPath();
+            if (f) return String(f);
+        }
+
+        // AutoX/部分版本：getSource()
+        if (typeof eng.getSource === "function") {
+            let src = eng.getSource();
+            if (src) {
+                if (typeof src.getFile === "function") {
+                    let f2 = src.getFile();
+                    if (f2 && typeof f2.getPath === "function") return f2.getPath();
+                    if (f2) return String(f2);
+                }
+                if (typeof src.getPath === "function") return src.getPath();
+                let s = String(src);
+                if (s && s.indexOf("/") >= 0) return s;
+            }
+        }
+
+        // 少数环境：source 字段
+        if (eng.source) {
+            let s2 = String(eng.source);
+            if (s2 && s2.indexOf("/") >= 0) return s2;
+        }
+    } catch (e) {}
+
+    return fallbackPath;
+}
+
+function prepareConsole() {
+    try {
+        if (CONFIG.showConsole) {
+            console.show();
+            console.clear();
+        } else {
+            console.hide();
+        }
+    } catch (e) {}
 }
 
 var Network = {
-    client: new OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build(),
-    pool: [].concat(SEED_MIRRORS), // 初始只有种子
+    client: new OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build(),
+    pool: [].concat(SEED_MIRRORS),
     bestMirror: null,
 
-    // 1. 获取公益梯子 (从 wengzhenquan 仓库拉取)
+    // 1. 获取公益梯子 (模仿小社脚本逻辑)
     fetchLadder: function() {
-        updateLog(">>>>>→ 代理池初始化 ←<<<<<");
+        log(">>>>>→ 代理池初始化 ←<<<<<");
+        log("--→ 内置种子节点: " + SEED_MIRRORS.length);
         
-        // 这是参考代码中的路径
+        // 这是一个长期维护的公益节点列表
         let ladderUrl = "wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt";
         let fetched = false;
 
@@ -111,13 +150,13 @@ var Network = {
                     let count = 0;
                     for (let line of lines) {
                         line = line.trim();
+                        // 简单的URL校验
                         if (line.startsWith("http")) {
-                            // 确保以 / 结尾
                             this.pool.push(line.endsWith("/") ? line : line + "/");
                             count++;
                         }
                     }
-                    updateLog("✅ 拉取公益节点: " + count + "个");
+                    log("--→ 拉取公益节点: " + count);
                     fetched = true;
                     // 去重
                     this.pool = Array.from(new Set(this.pool));
@@ -128,39 +167,34 @@ var Network = {
             } catch (e) {}
         }
         
-        if(!fetched) updateLog("⚠️ 拉取失败，使用内置种子");
-        updateLog("🔋 当前节点总数: " + this.pool.length);
+        if(!fetched) log("⚠️ 拉取公益节点失败，使用内置节点");
+        log("--→ 当前可用总数: " + this.pool.length);
     },
 
-    // 2. 优选节点 (并发测速)
+    // 2. 优选节点
     pickBest: function() {
-        updateLog("---→> 节点极速筛选 <←---");
+        log("---→> ★节点极速筛选★ <←---");
         
         // 用 version 文件测速
         let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
-        let found = false;
-
-        // 简单的顺序测速，找到能用的就停，避免全部测速耗时太久
+        
         for (let mirror of this.pool) {
             try {
                 let start = new Date().getTime();
                 let req = new Request.Builder().url(mirror + testPath).get().build();
                 let res = this.client.newCall(req).execute();
-                
                 if (res.isSuccessful()) {
                     let cost = new Date().getTime() - start;
                     res.close();
-                    
-                    // 只有小于 3秒 的才算合格
-                    if (cost < 3000) {
-                        updateLog("✅ 选中: " + mirror);
-                        updateLog("⚡ 延迟: " + cost + " ms");
-                        this.bestMirror = mirror;
-                        return true;
-                    }
+                    log("✅ 选中加速器: " + mirror);
+                    log("⚡ 响应时间: " + cost + " ms");
+                    this.bestMirror = mirror;
+                    return true;
                 }
                 res.close();
-            } catch (e) {}
+            } catch (e) {
+                // log("❌ 淘汰: " + mirror);
+            }
         }
         return false;
     },
@@ -170,7 +204,7 @@ var Network = {
         let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
         let saveFile = files.join(CONFIG.installDir, localPath);
         
-        // 确保父目录存在 (特别是 modules 文件夹)
+        // 确保文件夹存在 (特别是 modules)
         files.createWithDirs(saveFile);
 
         try {
@@ -185,7 +219,7 @@ var Network = {
             while ((len = is.read(buffer)) != -1) fs.write(buffer, 0, len);
             fs.flush(); fs.close(); is.close(); res.close();
             
-            // 校验文件大小
+            // 校验
             if (files.exists(saveFile) && new File(saveFile).length() > 0) return true;
             return false;
         } catch (e) {
@@ -193,7 +227,7 @@ var Network = {
         }
     },
     
-    // 获取文本内容 (用于版本对比)
+    // 获取文本内容 (用于自我更新检查)
     getString: function(remoteName) {
         let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
         try {
@@ -213,88 +247,81 @@ var Network = {
 // ================= 主程序 =================
 
 function main() {
-    showUI();
-    console.show();
-    console.clear();
+    prepareConsole();
     
     // 1. 初始化目录
     files.createWithDirs(CONFIG.installDir);
     
-    // 2. 准备网络 (先拉取，后优选)
+    // 2. 准备网络
     Network.fetchLadder();
     if (!Network.pickBest()) {
-        updateLog("⚠️ 网络连接失败，请检查网络！");
-        sleep(2000); closeUI(); exit();
+        log("⚠️ 网络连接失败，请检查网络！");
+        sleep(2000); try{ win.close(); }catch(e){} exit();
     }
 
-    // 3. 自我更新检查 (核心修复：直接使用固定路径)
-    updateLog(">>>>→ 检查更新器版本 ←<<<<");
+    // 3. 自我更新检查 (核心：先更新更新器自己)
+    log(">>>>→ 检查更新器版本 ←<<<<");
+    let myPath = files.join(CONFIG.installDir, CONFIG.selfName); // 目标路径
+
+    // [Fix] 不再直接调用 getSourceFile()，避免你遇到的 TypeError
+    let currentPath = getCurrentScriptPath(myPath); // 当前运行路径(兼容)
     
-    // 目标路径：/sdcard/脚本/淘宝全能助手/【TB】一键更新.js
-    let targetSelfPath = files.join(CONFIG.installDir, CONFIG.selfName);
-    
-    // 下载远程代码字符串
     let remoteCode = Network.getString(CONFIG.selfName);
-    
     if (remoteCode && remoteCode.length > 500) {
-        let localCode = "";
-        // 读取本地文件内容（如果存在）
-        if(files.exists(targetSelfPath)) {
-            localCode = files.read(targetSelfPath);
-        }
-        
-        // 对比长度和内容前100字符
+        let localCode = files.exists(currentPath) ? files.read(currentPath) : "";
         if (localCode.length != remoteCode.length) {
-            updateLog("✨ 发现更新器新版本，正在自我修复...");
-            // 写入新代码
-            files.write(targetSelfPath, remoteCode);
+            log("✨ 发现更新器新版本，正在更新自己...");
+            // 更新标准安装目录下的文件
+            files.write(myPath, remoteCode);
+            // 如果当前运行的不是安装目录下的，也更新当前运行的，防止下次还开旧的
+            if (currentPath != myPath) files.write(currentPath, remoteCode);
             
-            updateLog("🔄 正在重启新版更新器...");
-            sleep(1500);
-            
-            // 【关键步骤】关闭当前UI，防止双窗口
-            closeUI();
-            
-            // 启动新的自己
-            engines.execScriptFile(targetSelfPath); 
-            exit(); // 结束当前旧进程
+            log("🔄 重启更新器...");
+            sleep(500);
+
+            // [Fix] 先关掉本脚本悬浮窗，再启动新引擎，减少“短时间两个窗”的情况
+            try { win.close(); } catch(e) {}
+            try { console.hide(); } catch(e) {}
+
+            engines.execScriptFile(myPath); // 重启新的自己
+            exit();
         } else {
-            updateLog("✅ 更新器已是最新");
+            log("✅ 更新器已是最新");
         }
     }
 
     // 4. 更新业务文件
-    updateLog(">>>>→ 开始同步组件 ←<<<<");
+    log(">>>>→ 开始同步业务文件 ←<<<<");
     let success = 0;
     for (let item of TASK_FILES) {
-        updateLog("同步: " + item[0]);
+        log("同步: " + item[0]);
         if (Network.download(item[0], item[1])) {
             success++;
         } else {
-            updateLog("❌ 失败: " + item[0]);
+            log("❌ 失败: " + item[0]);
         }
-        sleep(50);
+        sleep(100);
     }
 
-    // 5. 结束 (纯净退出)
+    // 5. 结束 (不启动主程序，只刷新文件)
     if (success == TASK_FILES.length) {
-        updateLog("------→> ★更新完成★ <←------");
-        updateLog("💡 请手动运行 【TB】一键启动.js");
-        // 刷新图库
+        log("------→> ★更新完成★ <←------");
+        // 刷新图库，让文件管理器能看到新文件
         media.scanFile(CONFIG.installDir);
     } else {
-        updateLog("⚠️ 更新不完整 (" + success + "/" + TASK_FILES.length + ")");
+        log("⚠️ 更新不完整 (" + success + "/" + TASK_FILES.length + ")");
     }
 
-    sleep(3000); // 展示3秒结果
-    closeUI(); // 关闭悬浮窗
-    exit(); // 退出脚本
+    sleep(1500);
+    try { win.close(); } catch(e) {}
+    try { console.hide(); } catch(e) {}
+    exit();
 }
 
 try {
     main();
 } catch (e) {
     console.error(e);
-    // 报错也要尝试关闭UI
-    closeUI();
+    try { if(win) win.close(); } catch (e2) {}
+    try { console.hide(); } catch (e3) {}
 }
