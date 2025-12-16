@@ -1,3 +1,6 @@
+/**
+ * @description 全局配置
+ */
 var Config = {
     packageName: "com.taobao.taobao",
     
@@ -5,10 +8,9 @@ var Config = {
     ENABLE_SIGN: true,
     ENABLE_TASK: false,
 
-    // 防检测
+    // 防检测刷新 (针对88VIP等)
     enableLayoutRefresh: true,
     
-    // 调试
     debug: true
 };
 module.exports = Config;
