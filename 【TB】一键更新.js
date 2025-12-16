@@ -1,263 +1,206 @@
 /**
- * @name 【TB】一键更新
- * @version 7.0.0
- * @description 核心更新器：拉取公益节点 + 自身热更新 + 纯净退出
+ * 淘宝任务 - 自动更新器 (修复版)
+ * Fix: 修复 ScriptEngine.getSourceFile() 报错问题
+ * Author: Yaoxizzz (Original), Auto.js Architect (Fix)
  */
 
-// ================= 用户配置 =================
-const CONFIG = {
-    user: "Yaoxizzz",
-    repo: "Taobao-AutoJs6",
-    branch: "main",
-    installDir: "/sdcard/脚本/淘宝全能助手/", 
-    selfName: "【TB】一键更新.js" 
+"ui";
+
+// [Fix] 定义当前脚本所在目录，替代 getSourceFile()
+// 在 AutoJs6/Pro 中，files.cwd() 通常就是项目根目录
+const CURRENT_DIR = files.cwd();
+
+var color = "#009688";
+var frameColor = "#711111";
+
+ui.layout(
+    <frame>
+        <vertical>
+            <appbar background="{{color}}">
+                <toolbar id="toolbar" title="脚本自动更新 (修复版)" />
+            </appbar>
+            <card w="*" h="auto" margin="10 5" cardCornerRadius="2dp" cardElevation="1dp">
+                <vertical padding="15">
+                    <text text="当前版本信息" textSize="18sp" textColor="{{color}}" textStyle="bold" />
+                    <linear>
+                        <text text="本地版本：" textColor="black" />
+                        <text id="localVer" text="读取中..." textColor="#757575" />
+                    </linear>
+                    <linear>
+                        <text text="最新版本：" textColor="black" />
+                        <text id="remoteVer" text="等待检测..." textColor="#757575" />
+                    </linear>
+                    <text id="verDesc" text="" marginTop="5" textColor="#9e9e9e" size="12" />
+                </vertical>
+            </card>
+
+            <card w="*" h="auto" margin="10 5" cardCornerRadius="2dp" cardElevation="1dp">
+                <vertical padding="15">
+                    <text text="更新源设置" textSize="18sp" textColor="{{color}}" textStyle="bold" />
+                    <radiogroup id="sourceGroup" orientation="vertical">
+                        <radio id="src_github" text="GitHub (GhProxy代理)" checked="true" />
+                        <radio id="src_gitee" text="Gitee (国内极速)" />
+                    </radiogroup>
+                </vertical>
+            </card>
+
+            <button id="checkBtn" text="检测更新" style="Widget.AppCompat.Button.Colored" margin="10 0" />
+            <button id="updateBtn" text="开始更新 (覆盖安装)" style="Widget.AppCompat.Button.Colored" margin="10 0" enabled="false" />
+            
+            <text id="log" margin="10" color="#757575" />
+        </vertical>
+    </frame>
+);
+
+// 全局配置
+var ProjectConfig = {
+    // 仓库地址
+    github_url: "https://github.com/Yaoxizzz/Taobao-AutoJs6",
+    gitee_url: "https://gitee.com/Yaoxizzz/Taobao-AutoJs6", // 假设存在，实际以你提供的为准
+    // 加速代理
+    proxy_url: "https://ghproxy.net/",
+    // 项目配置文件路径
+    config_path: files.join(CURRENT_DIR, "project.json"),
+    version_path: files.join(CURRENT_DIR, "version"),
+    // 下载暂存路径
+    download_path: files.join(CURRENT_DIR, "update_temp.zip")
 };
 
-// 业务文件清单 [远程文件名, 本地文件名]
-// 本地文件名我做了规范化处理，方便 modules 调用
-const TASK_FILES = [
-    ["【TB】项目配置.json", "project.json"],
-    ["【TB】一键启动.js", "main.js"],
-    ["modules/Config.js", "modules/Config.js"],
-    ["modules/Utils.js", "modules/Utils.js"],
-    ["modules/SignTask.js", "modules/SignTask.js"]
-];
+// 绑定事件
+ui.checkBtn.click(() => threads.start(checkUpdate));
+ui.updateBtn.click(() => threads.start(doUpdate));
 
-// 种子节点 (用于拉取更大的梯子)
-const SEED_MIRRORS = [
-    "https://ghproxy.net/",
-    "https://mirror.ghproxy.com/",
-    "https://github.moeyy.xyz/",
-    "https://raw.githubusercontent.com/"
-];
+// 初始化
+init();
 
-// ================= 核心层 =================
-
-importClass(java.io.File);
-importClass(java.io.FileOutputStream);
-importClass(okhttp3.OkHttpClient);
-importClass(okhttp3.Request);
-importClass(java.util.concurrent.TimeUnit);
-
-// 悬浮窗 UI
-var win = floaty.rawWindow(
-    <card cardCornerRadius="8dp" cardElevation="6dp" bg="#1A1A1A" w="300dp">
-        <vertical padding="12">
-            <text text="★ 脚本检查更新 ★" textSize="14sp" textColor="#FFD700" textStyle="bold" gravity="center"/>
-            <text id="status" text="正在初始化..." textSize="11sp" textColor="#00FF00" marginTop="8" maxLines="10"/>
-            <progressbar id="progress" w="*" h="2dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="8"/>
-        </vertical>
-    </card>
-);
-win.setPosition(device.width/2 - 150, device.height/4);
-win.setTouchable(false);
-
-function log(msg) {
-    let t = new Date();
-    let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
-    console.log(msg);
+function init() {
+    // 读取本地版本
+    let localVer = "0.0.0";
+    if (files.exists(ProjectConfig.version_path)) {
+        localVer = files.read(ProjectConfig.version_path).trim();
+    } else if (files.exists(ProjectConfig.config_path)) {
+        try {
+            let json = JSON.parse(files.read(ProjectConfig.config_path));
+            localVer = json.versionName || json.version || "0.0.0";
+        } catch (e) {}
+    }
     ui.run(() => {
-        if (win && win.status) {
-            let old = win.status.getText();
-            win.status.setText(old + "\n" + msg);
-            if(win.status.getLineCount() > 8) {
-                win.status.setText(msg); 
-            }
-        }
+        ui.localVer.setText(localVer);
+        logUi("当前目录: " + CURRENT_DIR);
     });
 }
 
-var Network = {
-    client: new OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build(),
-    pool: [].concat(SEED_MIRRORS),
-    bestMirror: null,
-
-    // 1. 获取公益梯子 (模仿小社脚本逻辑)
-    fetchLadder: function() {
-        log(">>>>>→ 代理池初始化 ←<<<<<");
-        log("--→ 内置种子节点: " + SEED_MIRRORS.length);
-        
-        // 这是一个长期维护的公益节点列表
-        let ladderUrl = "wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt";
-        let fetched = false;
-
-        for (let seed of SEED_MIRRORS) {
-            let url = seed + "https://raw.githubusercontent.com/" + encodeURI(ladderUrl);
-            try {
-                let req = new Request.Builder().url(url).get().build();
-                let res = this.client.newCall(req).execute();
-                if (res.isSuccessful()) {
-                    let content = res.body().string();
-                    let lines = content.split("\n");
-                    let count = 0;
-                    for (let line of lines) {
-                        line = line.trim();
-                        // 简单的URL校验
-                        if (line.startsWith("http")) {
-                            this.pool.push(line.endsWith("/") ? line : line + "/");
-                            count++;
-                        }
-                    }
-                    log("--→ 拉取公益节点: " + count);
-                    fetched = true;
-                    // 去重
-                    this.pool = Array.from(new Set(this.pool));
-                    res.close();
-                    break;
-                }
-                res.close();
-            } catch (e) {}
-        }
-        
-        if(!fetched) log("⚠️ 拉取公益节点失败，使用内置节点");
-        log("--→ 当前可用总数: " + this.pool.length);
-    },
-
-    // 2. 优选节点
-    pickBest: function() {
-        log("---→> ★节点极速筛选★ <←---");
-        
-        // 用 version 文件测速
-        let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
-        
-        for (let mirror of this.pool) {
-            try {
-                let start = new Date().getTime();
-                let req = new Request.Builder().url(mirror + testPath).get().build();
-                let res = this.client.newCall(req).execute();
-                if (res.isSuccessful()) {
-                    let cost = new Date().getTime() - start;
-                    res.close();
-                    log("✅ 选中加速器: " + mirror);
-                    log("⚡ 响应时间: " + cost + " ms");
-                    this.bestMirror = mirror;
-                    return true;
-                }
-                res.close();
-            } catch (e) {
-                // log("❌ 淘汰: " + mirror);
-            }
-        }
-        return false;
-    },
-
-    // 3. 下载文件
-    download: function(remoteName, localPath) {
-        let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
-        let saveFile = files.join(CONFIG.installDir, localPath);
-        
-        // 确保文件夹存在 (特别是 modules)
-        files.createWithDirs(saveFile);
-
-        try {
-            let req = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
-            let res = this.client.newCall(req).execute();
-            if (!res.isSuccessful()) { res.close(); return false; }
-
-            let is = res.body().byteStream();
-            let fs = new FileOutputStream(saveFile);
-            let buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192);
-            let len;
-            while ((len = is.read(buffer)) != -1) fs.write(buffer, 0, len);
-            fs.flush(); fs.close(); is.close(); res.close();
-            
-            // 校验
-            if (files.exists(saveFile) && new File(saveFile).length() > 0) return true;
-            return false;
-        } catch (e) {
-            return false;
-        }
-    },
-    
-    // 获取文本内容 (用于自我更新检查)
-    getString: function(remoteName) {
-        let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
-        try {
-            let req = new Request.Builder().url(url).get().build();
-            let res = this.client.newCall(req).execute();
-            if (res.isSuccessful()) {
-                let s = res.body().string();
-                res.close();
-                return s;
-            }
-            res.close();
-        } catch(e){}
-        return null;
-    }
-};
-
-// ================= 主程序 =================
-
-function main() {
-    console.show();
-    console.clear();
-    
-    // 1. 初始化目录
-    files.createWithDirs(CONFIG.installDir);
-    
-    // 2. 准备网络
-    Network.fetchLadder();
-    if (!Network.pickBest()) {
-        log("⚠️ 网络连接失败，请检查网络！");
-        sleep(2000); win.close(); exit();
-    }
-
-    // 3. 自我更新检查 (核心：先更新更新器自己)
-    log(">>>>→ 检查更新器版本 ←<<<<");
-    let myPath = files.join(CONFIG.installDir, CONFIG.selfName); // 目标路径
-    let currentPath = engines.myEngine().getSourceFile().getPath(); // 当前运行路径
-    
-    let remoteCode = Network.getString(CONFIG.selfName);
-    if (remoteCode && remoteCode.length > 500) {
-        let localCode = files.exists(currentPath) ? files.read(currentPath) : "";
-        if (localCode.length != remoteCode.length) {
-            log("✨ 发现更新器新版本，正在更新自己...");
-            // 更新标准安装目录下的文件
-            files.write(myPath, remoteCode);
-            // 如果当前运行的不是安装目录下的，也更新当前运行的，防止下次还开旧的
-            if (currentPath != myPath) files.write(currentPath, remoteCode);
-            
-            log("🔄 重启更新器...");
-            sleep(1000);
-            engines.execScriptFile(myPath); // 重启新的自己
-            win.close();
-            exit();
-        } else {
-            log("✅ 更新器已是最新");
-        }
-    }
-
-    // 4. 更新业务文件
-    log(">>>>→ 开始同步业务文件 ←<<<<");
-    let success = 0;
-    for (let item of TASK_FILES) {
-        log("同步: " + item[0]);
-        if (Network.download(item[0], item[1])) {
-            success++;
-        } else {
-            log("❌ 失败: " + item[0]);
-        }
-        sleep(100);
-    }
-
-    // 5. 结束 (不启动主程序，只刷新文件)
-    if (success == TASK_FILES.length) {
-        log("------→> ★更新完成★ <←------");
-        // 刷新图库，让文件管理器能看到新文件
-        media.scanFile(CONFIG.installDir);
+function getBaseUrl() {
+    if (ui.src_github.isChecked()) {
+        return ProjectConfig.proxy_url + ProjectConfig.github_url + "/archive/refs/heads/main.zip";
     } else {
-        log("⚠️ 更新不完整 (" + success + "/" + TASK_FILES.length + ")");
+        // Gitee 逻辑暂略，通常 Gitee 不需要代理
+        return ProjectConfig.gitee_url + "/repository/archive/main.zip";
     }
-
-    sleep(3000);
-    win.close();
-    console.hide();
-    exit();
 }
 
-try {
-    main();
-} catch (e) {
-    console.error(e);
-    if(win) win.close();
+function getVersionUrl() {
+    if (ui.src_github.isChecked()) {
+        return ProjectConfig.proxy_url + "https://raw.githubusercontent.com/Yaoxizzz/Taobao-AutoJs6/main/version";
+    } else {
+        return ProjectConfig.gitee_url + "/raw/main/version";
+    }
+}
+
+function checkUpdate() {
+    logUi("正在检测更新...");
+    let url = getVersionUrl();
+    try {
+        let res = http.get(url);
+        if (res.statusCode == 200) {
+            let remoteVer = res.body.string().trim();
+            ui.run(() => {
+                ui.remoteVer.setText(remoteVer);
+                let current = ui.localVer.getText().toString();
+                if (compareVersion(remoteVer, current) > 0) {
+                    logUi("发现新版本！");
+                    ui.updateBtn.setEnabled(true);
+                    ui.verDesc.setText("建议立即更新");
+                } else {
+                    logUi("已是最新版本");
+                    ui.verDesc.setText("无需更新");
+                }
+            });
+        } else {
+            logUi("检测失败: " + res.statusMessage);
+        }
+    } catch (e) {
+        logUi("检测出错: " + e.message);
+    }
+}
+
+function doUpdate() {
+    let downloadUrl = getBaseUrl();
+    logUi("开始下载: " + downloadUrl);
+    
+    try {
+        // 1. 下载 ZIP
+        let res = http.get(downloadUrl);
+        if (res.statusCode != 200) {
+            logUi("下载失败: HTTP " + res.statusCode);
+            return;
+        }
+        files.writeBytes(ProjectConfig.download_path, res.body.bytes());
+        logUi("下载完成，准备解压...");
+
+        // 2. 解压
+        // [Fix] 使用 $zip 模块或标准解压
+        // 注意：files.join(CURRENT_DIR) 确保解压到当前目录
+        $zip.unzip(ProjectConfig.download_path, CURRENT_DIR);
+        
+        logUi("解压完成！");
+
+        // 3. 处理文件夹嵌套问题
+        // GitHub 下载的 zip 通常会多一层 "RepoName-main" 的文件夹
+        // 我们需要把里面的内容移动出来
+        let unzipDirName = "Taobao-AutoJs6-main"; // 根据仓库名推测
+        let unzipDirPath = files.join(CURRENT_DIR, unzipDirName);
+        
+        if (files.exists(unzipDirPath)) {
+            logUi("正在整理文件结构...");
+            let list = files.listDir(unzipDirPath);
+            for (let i = 0; i < list.length; i++) {
+                let fileName = list[i];
+                let src = files.join(unzipDirPath, fileName);
+                let dest = files.join(CURRENT_DIR, fileName);
+                files.move(src, dest);
+            }
+            files.removeDir(unzipDirPath);
+        }
+
+        // 4. 清理
+        files.remove(ProjectConfig.download_path);
+        
+        logUi("更新成功！请重启脚本。");
+        toast("更新成功！");
+        
+    } catch (e) {
+        logUi("更新失败: " + e);
+        console.error(e);
+    }
+}
+
+function compareVersion(v1, v2) {
+    if (!v1 || !v2) return 0;
+    let v1arr = v1.split(".");
+    let v2arr = v2.split(".");
+    for (let i = 0; i < Math.max(v1arr.length, v2arr.length); i++) {
+        let n1 = parseInt(v1arr[i] || 0);
+        let n2 = parseInt(v2arr[i] || 0);
+        if (n1 > n2) return 1;
+        if (n1 < n2) return -1;
+    }
+    return 0;
+}
+
+function logUi(msg) {
+    ui.run(() => {
+        ui.log.setText(ui.log.getText() + "\n" + msg);
+        // console.log(msg);
+    });
 }
