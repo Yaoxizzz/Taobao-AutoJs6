@@ -1,61 +1,63 @@
 /**
- * @name 淘宝全能助手 V2.0.3 (正式版)
- * @version 2.0.3
- * @description 集成防卡死、自动启动、状态机管理的完整版本
+ * @name 淘宝全能助手 V2.0.4 (等待指令版)
+ * @version 2.0.4
+ * @description 启动后仅显示悬浮窗，等待用户手动点击开始
  */
 
-// ================= 配置区 =================
 const CONFIG = {
-    appName: "淘宝",
     packageName: "com.taobao.taobao",
+    enableLayoutRefresh: true, // 88VIP防卡死开关
     
-    // === 任务开关 ===
-    ENABLE_SIGN: true,      // 签到任务
-    ENABLE_TASK: false,     // 浏览任务 (测试稳定后请改为 true)
-
-    // === 运行参数 ===
-    enableLayoutRefresh: true, // 开启防WebView卡死
-    browseTime: 22000, 
-    searchKeywords: ["袜子", "手机壳", "抽纸", "洗衣液", "零食", "数据线"]
+    // === 任务开关 (逻辑控制) ===
+    // true: 点击开始后执行 / false: 跳过
+    ENABLE_SIGN: true,      
+    ENABLE_TASK: false      
 };
 
-// 全局状态
-const Runtime = {
+// 运行时全局变量
+var Runtime = {
     w: device.width,
     h: device.height,
-    floatWindow: null
+    floatWindow: null,
+    isRunning: false
 };
 
-// ================= 工具层 =================
+// ================= 工具类 =================
 
 var Utils = {
     init: function() {
         auto.waitFor();
-        // 尝试请求截图(辅助刷新)，失败也不阻塞
         if (CONFIG.enableLayoutRefresh) {
-            requestScreenCapture(false); 
+            requestScreenCapture(false);
         }
-        this.showWindow();
-        this.log("脚本启动中...");
+        // 初始化悬浮窗
+        FloatWin.init();
     },
 
     log: function(msg) {
-        let date = new Date();
-        let time = date.getHours() + ":" + date.getMinutes() + ":" + date.getSeconds();
+        let d = new Date();
+        let time = d.getHours() + ":" + d.getMinutes() + ":" + d.getSeconds();
         console.log("[" + time + "] " + msg);
         if (Runtime.floatWindow) {
             ui.run(() => {
-                try {
-                    Runtime.floatWindow.status.setText(msg);
-                } catch(e){}
+                try { Runtime.floatWindow.status.setText(msg); } catch(e){}
             });
         }
     },
 
-    // 强制刷新页面布局 (核心防卡死)
-    forceLayoutRefresh: function() {
+    // 启动淘宝 (防报错版)
+    startApp: function() {
+        this.log("启动淘宝...");
+        if (!app.launchPackage(CONFIG.packageName)) {
+            app.launch(CONFIG.packageName);
+        }
+        waitForPackage(CONFIG.packageName);
+        sleep(6000);
+    },
+
+    // 强制刷新 (核心技术)
+    forceRefresh: function() {
         if (!CONFIG.enableLayoutRefresh) return;
-        // 极微小滑动，欺骗系统重绘
         gestures([0, 50, [Runtime.w/2, Runtime.h/2], [Runtime.w/2, Runtime.h/2+2]]);
         sleep(200);
     },
@@ -65,54 +67,38 @@ var Utils = {
         timeout = timeout || 1500;
         let deadLine = new Date().getTime() + timeout;
         while (new Date().getTime() < deadLine) {
-            let uiObj = null;
-            if (prop === "text") uiObj = textContains(value).findOnce() || descContains(value).findOnce();
-            else if (prop === "match") uiObj = textMatches(value).findOnce() || descMatches(value).findOnce();
+            let obj = null;
+            if (prop === "text") obj = textContains(value).findOnce() || descContains(value).findOnce();
+            else if (prop === "match") obj = textMatches(value).findOnce() || descMatches(value).findOnce();
             
-            if (uiObj) return uiObj;
+            if (obj) return obj;
             
-            // 超时刷新
-            if (new Date().getTime() > deadLine - (timeout/2)) {
-                this.forceLayoutRefresh();
-            }
+            if (new Date().getTime() > deadLine - (timeout/2)) this.forceRefresh();
             sleep(200);
         }
         return null;
     },
 
-    clickNode: function(node, descStr) {
+    clickNode: function(node, desc) {
         if (!node) return false;
         let res = false;
         try {
             if (node.clickable()) res = node.click();
             else {
                 let b = node.bounds();
-                if (b.centerX()>0 && b.centerY()>0) res = click(b.centerX(), b.centerY());
+                if (b.centerX()>0) res = click(b.centerX(), b.centerY());
                 else {
                     let p = node.parent();
                     if (p && p.clickable()) res = p.click();
                 }
             }
-        } catch(e) {}
-        if (res && descStr) this.log("点击: " + descStr);
+        } catch(e){}
+        if (res && desc) this.log("点击: " + desc);
         return res;
     },
 
-    // 启动淘宝 (兼容所有安卓版本)
-    startApp: function() {
-        this.log("启动淘宝...");
-        // 优先使用 launchPackage，这是最稳的方法
-        if (!app.launchPackage(CONFIG.packageName)) {
-            // 备用方案
-            app.launch(CONFIG.packageName);
-        }
-        waitForPackage(CONFIG.packageName);
-        sleep(6000); // 等待开屏
-    },
-
-    // 回到首页
     goHome: function() {
-        this.log("返回首页...");
+        this.log("回首页...");
         let max = 6;
         while (max--) {
             if (this.findWidget("text", "首页") && this.findWidget("text", "我的淘宝")) {
@@ -120,40 +106,82 @@ var Utils = {
             }
             back();
             sleep(1000);
-            // 弹窗关闭
-            let close = textMatches(/(关闭|close|以后再说|取消)/).findOnce();
+            let close = textMatches(/(关闭|close|以后再说)/).findOnce();
             if (close) this.clickNode(close);
         }
         this.startApp();
         return true;
-    },
+    }
+};
 
-    showWindow: function() {
+// ================= 悬浮窗 UI =================
+
+var FloatWin = {
+    init: function() {
         if (Runtime.floatWindow) return;
+        
         Runtime.floatWindow = floaty.window(
-            <card cardCornerRadius="10dp" bg="#CC000000" w="200dp">
+            <card cardCornerRadius="10dp" cardElevation="5dp" bg="#CC000000" w="200dp">
                 <vertical padding="10">
-                    <text text="淘宝助手 V2.0.3" textColor="#FFD700" textSize="14sp" textStyle="bold"/>
-                    <text id="status" text="准备就绪" textColor="#FFFFFF" textSize="12sp" marginTop="5"/>
+                    <text text="淘宝助手 V2.0.4" textColor="#FFD700" textSize="14sp" textStyle="bold" gravity="center"/>
+                    <text id="status" text="等待开始..." textColor="#FFFFFF" textSize="12sp" marginTop="5" gravity="center"/>
+                    <horizontal gravity="center" marginTop="8">
+                        <button id="btn_start" text="开始运行" w="auto" h="40dp" style="Widget.AppCompat.Button.Colored"/>
+                        <button id="btn_stop" text="停止" w="auto" h="40dp" marginLeft="10"/>
+                    </horizontal>
                 </vertical>
             </card>
         );
-        Runtime.floatWindow.setPosition(50, 200);
-        // 脚本结束自动关闭悬浮窗
-        events.on("exit", function(){
+
+        Runtime.floatWindow.setPosition(100, 300);
+
+        // 按钮事件
+        Runtime.floatWindow.btn_start.click(() => {
+            if (Runtime.isRunning) return;
+            Runtime.isRunning = true;
+            threads.start(function() {
+                MainLogic.run();
+                Runtime.isRunning = false;
+                ui.run(() => { 
+                    try{ Runtime.floatWindow.status.setText("任务结束"); }catch(e){}
+                });
+            });
+        });
+
+        Runtime.floatWindow.btn_stop.click(() => {
+            exit();
+        });
+        
+        // 脚本退出时销毁
+        events.on("exit", () => {
             if(Runtime.floatWindow) Runtime.floatWindow.close();
         });
     }
 };
 
-// ================= 业务层 =================
+// ================= 任务逻辑 =================
 
-var Tasks = {
-    // 淘金币
-    coin: function() {
-        if (!CONFIG.ENABLE_SIGN) return;
+var MainLogic = {
+    run: function() {
+        Utils.log("开始执行...");
+        Utils.startApp();
+
+        if (CONFIG.ENABLE_SIGN) {
+            this.doCoin();
+            this.doVip();
+        }
+        
+        if (CONFIG.ENABLE_TASK) {
+            // 这里放原来的浏览任务逻辑
+            Utils.log("浏览任务未开启");
+        }
+        
+        Utils.log("所有流程完毕");
+    },
+
+    doCoin: function() {
         Utils.goHome();
-        if (Utils.clickNode(Utils.findWidget("text", "领淘金币"), "进入金币")) {
+        if (Utils.clickNode(Utils.findWidget("text", "领淘金币"), "进金币")) {
             sleep(5000);
             Utils.log(">>> 金币签到");
             let sign = Utils.findWidget("text", "签到领取") || Utils.findWidget("text", "点击签到");
@@ -167,18 +195,16 @@ var Tasks = {
         }
     },
 
-    // 88VIP (重点防护)
-    vip: function() {
-        if (!CONFIG.ENABLE_SIGN) return;
+    doVip: function() {
         Utils.goHome();
-        if (Utils.clickNode(Utils.findWidget("text", "88VIP"), "进入VIP")) {
-            Utils.log("加载VIP页面...");
+        if (Utils.clickNode(Utils.findWidget("text", "88VIP"), "进VIP")) {
+            Utils.log("进入VIP...");
             sleep(4000);
-            Utils.forceLayoutRefresh(); // 强制刷新防止卡死
+            Utils.forceRefresh(); // 核心防卡死
             sleep(1000);
-
+            
             if (Utils.findWidget("text", "明日领", 2000)) {
-                Utils.log("VIP: 今日已签");
+                Utils.log("VIP今日已签");
             } else {
                 let targets = ["去签到", "立即签到", "领取积分"];
                 let clicked = false;
@@ -191,7 +217,7 @@ var Tasks = {
                         break;
                     }
                 }
-                if (!clicked) Utils.log("未找到VIP签到按钮");
+                if (!clicked) Utils.log("未找到VIP按钮");
             }
             back(); sleep(1000);
             if (!text("首页").exists()) back();
@@ -200,25 +226,6 @@ var Tasks = {
     }
 };
 
-// ================= 入口 =================
-
-function main() {
-    Utils.init();
-    Utils.startApp();
-
-    try {
-        Tasks.coin();
-        Tasks.vip();
-        
-        Utils.log("所有任务完成");
-        toast("脚本运行结束");
-    } catch (e) {
-        Utils.log("异常: " + e);
-        console.error(e);
-    } finally {
-        sleep(3000);
-        exit(); // 自动退出，关闭悬浮窗
-    }
-}
-
-main();
+// 保持脚本运行，等待悬浮窗操作
+Utils.init();
+setInterval(() => {}, 1000);
