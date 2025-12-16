@@ -1,6 +1,6 @@
 {
   "name": "淘宝全能助手V20",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "main": "main.js",
   "ignore": [
     "build"
