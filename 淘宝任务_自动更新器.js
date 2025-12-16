@@ -1,38 +1,46 @@
 /**
- * @name 淘宝全能助手_企业级更新引擎 V5.0
- * @version 5.0.0 (Ultimate)
- * @description 1:1复刻小社脚本网络层：动态代理池+OkHttp并发+断点续传+自动部署
+ * @name 淘宝全能助手_终极更新器 V6.0
+ * @version 6.0.0
+ * @description 自身热更新 + 海量动态代理 + 严格手动启动模式
  */
 
-// ================= 1. 全局配置 (Config) =================
+// ================= 1. 配置中心 (User Config) =================
 
 const CONFIG = {
     user: "Yaoxizzz",
     repo: "Taobao-AutoJs6",
     branch: "main",
+    
+    // 强制安装路径
     installDir: "/sdcard/脚本/淘宝全能助手/",
-    mainScript: "main.js",
-    // 代理池更新源 (可以是多个Raw链接)
-    proxySource: [
-        "https://ghproxy.com/",
-        "https://mirror.ghproxy.com/",
-        "https://ghproxy.net/",
-        "https://github.moeyy.xyz/",
-        "https://raw.githubusercontent.com/"
-    ]
+    
+    // 更新器在服务器上的文件名 (用于自我更新)
+    // 请确保你GitHub仓库里上传了这个文件，名字必须一致
+    selfName: "淘宝任务_自动更新器.js",
+    
+    // 是否显示详细调试日志
+    debug: true
 };
 
-const FILE_LIST = [
+// 业务文件清单 [ "远程文件名", "本地保存名" ]
+const TASK_FILES = [
     ["淘宝_项目配置.json", "project.json"],
     ["淘宝全能助手_主程序.js", "main.js"]
 ];
 
-// ================= 2. 网络核心 (Network Core - 复刻版) =================
+// 初始备用种子节点 (用于拉取更大的代理列表)
+const SEED_MIRRORS = [
+    "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
+    "https://ghproxy.cn/",
+    "https://github.moeyy.xyz/",
+    "https://raw.githubusercontent.com/"
+];
 
-// 导入 Java 类
+// ================= 2. 核心网络层 (OkHttp) =================
+
 importClass(java.io.File);
 importClass(java.io.FileOutputStream);
-importClass(java.net.URL);
 importClass(java.util.concurrent.TimeUnit);
 importClass(okhttp3.OkHttpClient);
 importClass(okhttp3.Request);
@@ -42,82 +50,42 @@ var Network = {
     bestMirror: null,
 
     init: function() {
-        // 配置 OkHttp (参考小社脚本的超时设置)
         this.client = new OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS) // 连接超时缩短，加快测速
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true) // 开启失败重连
+            .retryOnConnectionFailure(true)
             .build();
     },
 
-    // 测速并选择最佳镜像
-    selectMirror: function() {
-        console.log("🚀 正在从 " + CONFIG.proxySource.length + " 个节点中优选线路...");
-        
-        let validMirrors = [];
-        let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
-
-        // 并发测速 (模拟)
-        for (let i = 0; i < CONFIG.proxySource.length; i++) {
-            let mirror = CONFIG.proxySource[i];
-            try {
-                let target = mirror + testPath;
-                let start = new Date().getTime();
-                let request = new Request.Builder()
-                    .url(target)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-                    .build();
-
-                let response = this.client.newCall(request).execute();
-                let end = new Date().getTime();
-                
-                if (response.isSuccessful()) {
-                    let body = response.body().string().trim();
-                    // 简单校验内容是否像版本号
-                    if (body.length < 10 && body.match(/[\d\.]+/)) {
-                        console.log("✅ 节点[" + i + "]可用: " + (end - start) + "ms");
-                        validMirrors.push({ url: mirror, cost: (end - start) });
-                    }
-                    response.close();
-                }
-            } catch (e) {
-                // console.log("❌ 节点[" + i + "]超时: " + mirror);
+    // 下载内容为字符串
+    getString: function(url) {
+        try {
+            let req = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
+            let res = this.client.newCall(req).execute();
+            if (res.isSuccessful()) {
+                let str = res.body().string();
+                res.close();
+                return str;
             }
-        }
-
-        if (validMirrors.length > 0) {
-            // 按延迟排序
-            validMirrors.sort((a, b) => a.cost - b.cost);
-            this.bestMirror = validMirrors[0].url;
-            console.log("🏆 优选线路: " + this.bestMirror);
-            return true;
-        }
-        return false;
+            res.close();
+        } catch (e) {}
+        return null;
     },
 
-    // 强力下载 (支持中文路径自动编码)
-    download: function(baseUrl, remoteName, localName) {
-        let savePath = files.join(CONFIG.installDir, localName);
-        let encodedName = encodeURI(remoteName); // 关键：解决中文404
-        let finalUrl = baseUrl + encodedName;
-
+    // 下载文件到本地
+    downloadFile: function(url, savePath) {
         try {
-            let request = new Request.Builder()
-                .url(finalUrl)
-                .header("User-Agent", "Mozilla/5.0")
-                .build();
-
-            let response = this.client.newCall(request).execute();
-            if (!response.isSuccessful()) {
-                console.log("❌ HTTP " + response.code());
-                response.close();
+            let req = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
+            let res = this.client.newCall(req).execute();
+            if (!res.isSuccessful()) {
+                res.close();
                 return false;
             }
 
-            let is = response.body().byteStream();
+            let is = res.body().byteStream();
             let fs = new FileOutputStream(savePath);
-            let buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192); // 8KB buffer
+            let buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192);
             let len;
             while ((len = is.read(buffer)) != -1) {
                 fs.write(buffer, 0, len);
@@ -125,135 +93,210 @@ var Network = {
             fs.flush();
             fs.close();
             is.close();
-            response.close();
-
-            // 校验文件
-            let f = new File(savePath);
-            if (f.exists() && f.length() > 10) {
-                return true;
-            }
-            return false;
+            res.close();
+            
+            // 校验
+            if (files.exists(savePath) && new File(savePath).length() > 0) return true;
         } catch (e) {
-            console.log("❌ 下载异常: " + e.message);
-            return false;
+            console.error(e);
         }
+        return false;
     }
 };
 
-// ================= 3. 业务逻辑 (Logic) =================
+// ================= 3. 代理池管理器 (Proxy Manager) =================
+
+var ProxyMgr = {
+    pool: [],
+
+    // 第一步：构建海量代理池
+    buildPool: function() {
+        console.log("📡 正在初始化网络矩阵...");
+        // 1. 加入种子节点
+        this.pool = this.pool.concat(SEED_MIRRORS);
+
+        // 2. 尝试从仓库拉取 "公益梯子[魔法].txt"
+        // 这里的逻辑是：先用种子节点去尝试下载梯子文件，如果下载到了，就解析出更多的节点
+        // 这里我用了 wengzhenquan 的源仓库地址，保证源头活水
+        let ladderUrlPath = "wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt";
+        
+        for (let seed of SEED_MIRRORS) {
+            let listUrl = seed + "https://raw.githubusercontent.com/" + encodeURI(ladderUrlPath);
+            let content = Network.getString(listUrl);
+            
+            if (content && content.length > 100) {
+                console.log("✅ 成功获取云端动态代理列表");
+                let lines = content.split("\n");
+                let count = 0;
+                for (let line of lines) {
+                    line = line.trim();
+                    // 简单的正则匹配URL
+                    if (line.startsWith("http") && !line.includes(" ")) {
+                        this.pool.push(line.endsWith("/") ? line : line + "/");
+                        count++;
+                    }
+                }
+                console.log("➕ 追加了 " + count + " 个公益节点");
+                break; // 只要拉取成功一次即可
+            }
+        }
+        
+        // 去重
+        this.pool = Array.from(new Set(this.pool));
+        console.log("🔋 当前可用检测节点: " + this.pool.length + " 个");
+    },
+
+    // 第二步：极速优选
+    pickBest: function() {
+        console.log("🚀 正在全网测速优选...");
+        let minCost = 99999;
+        
+        // 用 version 文件作为测速标的
+        let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
+
+        // 遍历代理池
+        for (let mirror of this.pool) {
+            let target = mirror + testPath;
+            let t1 = new Date().getTime();
+            // 尝试读取version，能读到说明通
+            let res = Network.getString(target);
+            let t2 = new Date().getTime();
+            
+            if (res) {
+                let cost = t2 - t1;
+                console.log("✅ 节点响应: " + cost + "ms -> " + mirror.substring(0, 25) + "...");
+                
+                // 只要找到一个延迟低于 1500ms 的，直接选用，不再浪费时间
+                if (cost < 1500) {
+                    Network.bestMirror = mirror;
+                    console.log("⚡ 选中极速节点！");
+                    return true;
+                }
+                // 否则记录最小值
+                if (cost < minCost) {
+                    minCost = cost;
+                    Network.bestMirror = mirror;
+                }
+            }
+        }
+        
+        if (Network.bestMirror) {
+            console.log("🏆 最终优选: " + Network.bestMirror);
+            return true;
+        }
+        return false;
+    }
+};
+
+// ================= 4. 核心逻辑 (Core Logic) =================
 
 var Core = {
     init: function() {
         console.show();
         console.clear();
-        console.setTitle("系统更新 V5.0");
+        console.setTitle("Auto.js 智能更新 V6.0");
         
-        // 1. 强制铺路
-        if (!files.ensureDir(CONFIG.installDir)) {
-            console.error("❌ 存储权限不足，无法创建目录！");
-            exit();
-        }
-        console.log("📂 目录就绪: " + CONFIG.installDir);
-        
+        // 强制铺路
+        files.createWithDirs(CONFIG.installDir);
         Network.init();
     },
 
-    getLocalVer: function() {
-        try {
-            let p = files.join(CONFIG.installDir, "project.json");
-            if (!files.exists(p)) return "0.0.0";
-            return JSON.parse(files.read(p)).version || "0.0.0";
-        } catch (e) { return "0.0.0"; }
-    },
-
-    getRemoteVer: function() {
-        let url = Network.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
-        try {
-            let request = new Request.Builder().url(url).build();
-            let response = Network.client.newCall(request).execute();
-            if (response.isSuccessful()) {
-                let v = response.body().string().trim();
-                response.close();
-                return v;
-            }
-        } catch(e) {}
-        return null;
-    },
-
-    start: function() {
-        this.init();
-
-        // 1. 选线
-        if (!Network.selectMirror()) {
-            console.error("⚠️ 网络连接失败！尝试离线启动...");
-            this.launch();
-            return;
-        }
-
-        // 2. 对比版本
-        let localVer = this.getLocalVer();
-        let remoteVer = this.getRemoteVer();
+    // 自我更新逻辑 (Bootstrap)
+    checkSelfUpdate: function() {
+        console.log("\n🔍 检查更新器自身版本...");
+        let myPath = engines.myEngine().getSourceFile().getPath();
         
-        console.log("🏠 本地: " + localVer);
-        console.log("☁️ 云端: " + (remoteVer || "获取失败"));
-
-        if (!remoteVer || remoteVer == localVer) {
-            console.log("✅ 无需更新");
-            sleep(1000);
-            this.launch();
-            return;
+        // 构建云端下载链接
+        let remoteUrl = Network.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(CONFIG.selfName);
+        
+        // 下载云端更新器代码到内存
+        let remoteCode = Network.getString(remoteUrl);
+        
+        if (remoteCode && remoteCode.length > 500) { // 代码长度肯定大于500
+            let localCode = files.read(myPath);
+            
+            // 简单对比内容长度，不一样就认为是新版 (简单粗暴有效)
+            if (remoteCode.length != localCode.length) {
+                console.log("✨ 发现更新器新版本，正在覆盖...");
+                files.write(myPath, remoteCode);
+                console.log("🔄 更新器已更新，正在重启自身...");
+                sleep(1000);
+                engines.execScriptFile(myPath); // 重启自己
+                exit(); // 退出当前旧进程
+            } else {
+                console.log("✅ 更新器已是最新");
+            }
+        } else {
+            console.log("⚠️ 无法获取远程更新器代码，跳过自检");
         }
+    },
 
-        // 3. 下载
-        console.log("\n⬇️ 开始全量更新...");
+    // 业务更新逻辑
+    updateProject: function() {
+        console.log("\n⬇️ 开始同步业务脚本...");
         let baseUrl = Network.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/";
-        let successCount = 0;
-
-        for (let i = 0; i < FILE_LIST.length; i++) {
-            let item = FILE_LIST[i];
-            console.log("同步: " + item[0]);
-            if (Network.download(baseUrl, item[0], item[1])) {
-                successCount++;
+        
+        let success = 0;
+        for (let item of TASK_FILES) {
+            let remoteName = item[0];
+            let localName = item[1];
+            console.log("同步: " + remoteName);
+            
+            if (Network.downloadFile(baseUrl + encodeURI(remoteName), CONFIG.installDir + localName)) {
+                success++;
                 console.log("✅ 成功");
             } else {
-                console.log("❌ 失败");
+                console.error("❌ 失败");
             }
             sleep(200);
         }
-
-        // 4. 结算
-        if (successCount == FILE_LIST.length) {
-            console.log("🎉 更新成功！");
-            toast("更新完成");
-            
-            // 刷新媒体库 (通知系统文件变动)
-            media.scanFile(CONFIG.installDir);
-            
-            sleep(1500);
-            this.launch(); // 启动
-        } else {
-            console.error("⚠️ 更新不完整，建议重试！");
-            // 失败不启动，避免报错
-        }
+        
+        return success === TASK_FILES.length;
     },
 
-    // 启动主程序 (关闭控制台 -> 启动)
-    launch: function() {
-        let mainPath = files.join(CONFIG.installDir, CONFIG.mainScript);
-        if (files.exists(mainPath)) {
-            console.log("🚀 正在启动主程序...");
+    // 收尾
+    finish: function() {
+        console.log("\n=================");
+        console.log("🎉 更新流程结束");
+        console.log("📂 文件路径: " + CONFIG.installDir);
+        console.log("💡 请手动运行目录下的 main.js");
+        
+        // 刷新图库，通知系统文件变动
+        media.scanFile(CONFIG.installDir);
+        
+        // 倒计时关闭控制台
+        for (let i = 3; i > 0; i--) {
+            console.log("⏳ " + i + "秒后关闭窗口...");
             sleep(1000);
-            console.hide(); // 关掉黑框
-            engines.execScriptFile(mainPath);
-        } else {
-            console.error("❌ 未找到主程序，请检查更新！");
         }
+        console.hide();
+        exit();
     }
 };
 
-// 启动
+// ================= 入口 =================
+
 try {
-    Core.start();
+    Core.init();
+    
+    // 1. 准备网络
+    ProxyMgr.buildPool();
+    if (!ProxyMgr.pickBest()) {
+        console.error("❌ 无法连接到GitHub，请检查网络！");
+        exit();
+    }
+    
+    // 2. 自我更新
+    Core.checkSelfUpdate();
+    
+    // 3. 业务更新
+    // 这里不再对比version文件，直接强制全量拉取，保证最新
+    // 因为你有时候可能忘记改version号，强制更新更稳妥
+    Core.updateProject();
+    
+    // 4. 结束
+    Core.finish();
+
 } catch (e) {
-    console.error("崩溃: " + e);
+    console.error("致命错误: " + e);
 }
