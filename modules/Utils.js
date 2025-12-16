@@ -6,7 +6,7 @@ var Config = require('./Config.js');
 var Utils = {
     floatWin: null,
 
-    init: function() {
+    init: function(win) {
         auto.waitFor();
         if (Config.enableLayoutRefresh) {
             requestScreenCapture(false);
@@ -33,9 +33,7 @@ var Utils = {
     },
 
     log: function(msg) {
-        let t = new Date();
-        let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
-        console.log("[" + time + "] " + msg);
+        console.log(msg);
         if (this.floatWin) {
             ui.run(() => {
                 try { this.floatWin.status.setText(msg); } catch(e){}
@@ -47,7 +45,7 @@ var Utils = {
     forceRefresh: function() {
         if (!Config.enableLayoutRefresh) return;
         gestures([0, 50, [device.width/2, device.height/2], [device.width/2, device.height/2+2]]);
-        sleep(300);
+        sleep(200);
     },
 
     findWidget: function(prop, value, timeout) {
@@ -73,7 +71,7 @@ var Utils = {
             if (node.clickable()) res = node.click();
             else {
                 let b = node.bounds();
-                if (b.centerX() > 0 && b.centerY() > 0) res = click(b.centerX(), b.centerY());
+                if (b.centerX() > 0) res = click(b.centerX(), b.centerY());
                 else {
                     let p = node.parent();
                     if (p && p.clickable()) res = p.click();
