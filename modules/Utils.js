@@ -1,60 +1,30 @@
-/**
- * @description 基础工具库
- */
 var Config = require('./Config.js');
 
 var Utils = {
     floatWin: null,
 
-    // 初始化
-    init: function() {
-        auto.waitFor();
+    init: function(win) {
+        this.floatWin = win; // 接收主程序的悬浮窗引用
         if (Config.enableLayoutRefresh) {
             requestScreenCapture(false);
         }
-        this.showFloat();
-        this.log("脚本核心加载完毕");
     },
 
-    // 悬浮窗
-    showFloat: function() {
-        if (this.floatWin) return;
-        this.floatWin = floaty.window(
-            <card cardCornerRadius="10dp" bg="#CC000000" w="180dp">
-                <vertical padding="10">
-                    <text text="淘宝助手运行中" textColor="#FFD700" textSize="13sp" textStyle="bold" gravity="center"/>
-                    <text id="status" text="准备就绪" textColor="#FFFFFF" textSize="11sp" marginTop="4" gravity="center"/>
-                </vertical>
-            </card>
-        );
-        this.floatWin.setPosition(50, 200);
-        // 退出时自动关闭
-        events.on("exit", () => {
-            if (this.floatWin) this.floatWin.close();
-        });
-    },
-
-    // 日志
     log: function(msg) {
-        let t = new Date();
-        let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
-        console.log("[" + time + "] " + msg);
+        console.log(msg);
         if (this.floatWin) {
             ui.run(() => {
-                try { this.floatWindow.status.setText(msg); } catch(e){}
+                try { this.floatWin.status.setText(msg); } catch(e){}
             });
         }
     },
 
-    // 强制刷新布局 (针对88VIP等WebView)
     forceRefresh: function() {
         if (!Config.enableLayoutRefresh) return;
-        // 微动屏幕
         gestures([0, 50, [device.width/2, device.height/2], [device.width/2, device.height/2+2]]);
-        sleep(300);
+        sleep(200);
     },
 
-    // 智能找控件
     findWidget: function(prop, value, timeout) {
         timeout = timeout || 2000;
         let deadLine = new Date().getTime() + timeout;
@@ -62,18 +32,14 @@ var Utils = {
             let obj = null;
             if (prop === "text") obj = textContains(value).findOnce() || descContains(value).findOnce();
             else if (prop === "match") obj = textMatches(value).findOnce() || descMatches(value).findOnce();
-            else if (prop === "id") obj = id(value).findOnce();
             
             if (obj) return obj;
-            
-            // 没找到就尝试刷新
             if (new Date().getTime() > deadLine - (timeout/2)) this.forceRefresh();
             sleep(200);
         }
         return null;
     },
 
-    // 智能点击
     clickNode: function(node, desc) {
         if (!node) return false;
         let res = false;
@@ -81,7 +47,7 @@ var Utils = {
             if (node.clickable()) res = node.click();
             else {
                 let b = node.bounds();
-                if (b.centerX() > 0 && b.centerY() > 0) res = click(b.centerX(), b.centerY());
+                if (b.centerX() > 0) res = click(b.centerX(), b.centerY());
                 else {
                     let p = node.parent();
                     if (p && p.clickable()) res = p.click();
@@ -92,23 +58,20 @@ var Utils = {
         return res;
     },
 
-    // 启动APP (修复版)
     startApp: function() {
         this.log("启动淘宝...");
         if (!app.launchPackage(Config.packageName)) {
             app.launch(Config.packageName);
         }
         waitForPackage(Config.packageName);
-        sleep(6000); // 等待开屏
+        sleep(6000);
     },
 
-    // 回首页
     goHome: function() {
-        this.log("正在回首页...");
+        this.log("返回首页...");
         let max = 6;
         while (max--) {
             if (this.findWidget("text", "首页") && this.findWidget("text", "我的淘宝")) {
-                // 确保不在弹窗里
                 if (!text("立即领取").exists()) return true;
             }
             back();
