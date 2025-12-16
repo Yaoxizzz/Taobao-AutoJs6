@@ -5,7 +5,7 @@ var Utils = require('./Utils.js');
 
 var SignTask = {
     run: function() {
-        Utils.log(">>> 执行签到任务");
+        Utils.log(">>> 开始执行签到");
         this.doCoin();
         this.doVip();
         this.doRedPacket();
