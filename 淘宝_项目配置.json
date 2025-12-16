@@ -1,0 +1,40 @@
+{
+  "name": "淘宝全能助手V20",
+  "version": "2.0.0",
+  "main": "main.js",
+  "ignore": [
+    "build"
+  ],
+  "packageName": "com.taobao.taobao",
+  "permissions": [
+    "access_network_state",
+    "internet",
+    "read_phone_state",
+    "write_external_storage",
+    "system_alert_window",
+    "wake_lock"
+  ],
+  "accessibility_services": [
+    {
+      "name": "Auto.js",
+      "description": "用于淘宝全能签到任务V20"
+    }
+  ]
+}
+```
+
+### 🎯 如何使用 V20 进行测试
+
+1.  **文件说明**：
+    * `project.json`：项目配置文件（保持不变，或用我新提供的）。
+    * `main.js`：主程序脚本。**V20 版本包含了所有代码，不需要再去别的脚本复制内容。**
+
+2.  **配置开关**：
+    * 我在 `main.js` 的开头设置了 `CONFIG` 对象：
+        ```javascript
+        const CONFIG = {
+            // ...
+            ENABLE_SIGN: true,      // 默认为 true，测试签到
+            ENABLE_TASK: false,     // 默认为 false，测试时跳过繁琐的浏览任务
+            // ...
+        };
