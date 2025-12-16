@@ -1,7 +1,7 @@
 /**
- * @name 淘宝全能助手 V2.0.4 (等待指令版)
- * @version 2.0.4
- * @description 启动后仅显示悬浮窗，等待用户手动点击开始
+ * @name 淘宝全能助手 V2.0.5 (全自动版)
+ * @version 2.0.5
+ * @description 启动即运行，无需点击，任务结束后自动退出
  */
 
 const CONFIG = {
@@ -16,11 +16,8 @@ const CONFIG = {
 var Runtime = {
     w: device.width,
     h: device.height,
-    floatWindow: null,
-    isRunning: false
+    floatWindow: null
 };
-
-// ================= 工具类 =================
 
 var Utils = {
     init: function() {
@@ -28,7 +25,7 @@ var Utils = {
         if (CONFIG.enableLayoutRefresh) {
             requestScreenCapture(false);
         }
-        FloatWin.init();
+        this.showWindow();
     },
 
     log: function(msg) {
@@ -42,12 +39,14 @@ var Utils = {
         }
     },
 
+    // 启动淘宝
     startApp: function() {
-        this.log("启动淘宝...");
+        this.log("正在启动淘宝...");
         if (!app.launchPackage(CONFIG.packageName)) {
             app.launch(CONFIG.packageName);
         }
         waitForPackage(CONFIG.packageName);
+        this.log("等待应用加载...");
         sleep(6000);
     },
 
@@ -90,7 +89,7 @@ var Utils = {
     },
 
     goHome: function() {
-        this.log("回首页...");
+        this.log("返回首页...");
         let max = 6;
         while (max--) {
             if (this.findWidget("text", "首页") && this.findWidget("text", "我的淘宝")) {
@@ -103,83 +102,38 @@ var Utils = {
         }
         this.startApp();
         return true;
-    }
-};
+    },
 
-// ================= 悬浮窗 UI =================
-
-var FloatWin = {
-    init: function() {
+    // 极简悬浮窗 (纯展示)
+    showWindow: function() {
         if (Runtime.floatWindow) return;
-        
         Runtime.floatWindow = floaty.window(
-            <card cardCornerRadius="10dp" cardElevation="5dp" bg="#CC000000" w="200dp">
-                <vertical padding="10">
-                    <text text="淘宝助手 V2.0.4" textColor="#FFD700" textSize="14sp" textStyle="bold" gravity="center"/>
-                    <text id="status" text="等待开始..." textColor="#FFFFFF" textSize="12sp" marginTop="5" gravity="center"/>
-                    <horizontal gravity="center" marginTop="8">
-                        <button id="btn_start" text="开始运行" w="auto" h="40dp" style="Widget.AppCompat.Button.Colored"/>
-                        <button id="btn_stop" text="退出脚本" w="auto" h="40dp" marginLeft="10"/>
-                    </horizontal>
+            <card cardCornerRadius="8dp" cardElevation="5dp" bg="#CC000000" w="180dp">
+                <vertical padding="8">
+                    <text text="淘宝助手运行中" textColor="#FFD700" textSize="13sp" textStyle="bold" gravity="center"/>
+                    <text id="status" text="初始化..." textColor="#FFFFFF" textSize="11sp" marginTop="4" gravity="center"/>
                 </vertical>
             </card>
         );
-
         Runtime.floatWindow.setPosition(100, 300);
-
-        // 点击开始：执行任务
-        Runtime.floatWindow.btn_start.click(() => {
-            if (Runtime.isRunning) return;
-            Runtime.isRunning = true;
-            // 隐藏开始按钮，防止重复点击
-            Runtime.floatWindow.btn_start.setVisibility(8); // 8=GONE
-            
-            threads.start(function() {
-                try {
-                    MainLogic.run();
-                } catch(e) {
-                    Utils.log("出错: " + e);
-                } finally {
-                    Runtime.isRunning = false;
-                    ui.run(() => { 
-                        try{ 
-                            Runtime.floatWindow.status.setText("任务结束"); 
-                            Runtime.floatWindow.btn_start.setVisibility(0); // 恢复显示
-                        }catch(e){}
-                    });
-                }
-            });
-        });
-
-        // 点击退出：直接关闭
-        Runtime.floatWindow.btn_stop.click(() => {
-            exit();
-        });
-        
         events.on("exit", () => {
             if(Runtime.floatWindow) Runtime.floatWindow.close();
         });
     }
 };
 
-// ================= 任务逻辑 =================
+// ================= 业务层 =================
 
-var MainLogic = {
-    run: function() {
-        Utils.log("开始执行...");
-        Utils.startApp();
-
+var Tasks = {
+    runAll: function() {
         if (CONFIG.ENABLE_SIGN) {
             this.doCoin();
             this.doVip();
         }
-        
+        // 浏览任务逻辑占位
         if (CONFIG.ENABLE_TASK) {
-            Utils.log("浏览任务暂未开启");
+             Utils.log("浏览任务未开启");
         }
-        
-        Utils.log("所有流程完毕");
-        toast("结束");
     },
 
     doCoin: function() {
@@ -229,6 +183,25 @@ var MainLogic = {
     }
 };
 
-// 保持脚本运行，等待悬浮窗操作
-Utils.init();
-setInterval(() => {}, 1000);
+// ================= 直接运行 =================
+
+function main() {
+    Utils.init();
+    
+    // 直接开始业务，不等待点击
+    try {
+        Utils.startApp();
+        Tasks.runAll();
+        Utils.log("任务全部完成");
+        toast("脚本结束");
+    } catch (e) {
+        Utils.log("出错: " + e);
+        console.error(e);
+    } finally {
+        sleep(2000);
+        // 任务结束，彻底退出脚本，悬浮窗也会随之关闭
+        exit();
+    }
+}
+
+main();
