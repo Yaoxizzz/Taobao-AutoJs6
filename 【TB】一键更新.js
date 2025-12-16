@@ -1,206 +1,194 @@
 /**
- * 淘宝任务 - 自动更新器 (修复版)
- * Fix: 修复 ScriptEngine.getSourceFile() 报错问题
- * Author: Yaoxizzz (Original), Auto.js Architect (Fix)
+ * 淘宝全能助手 - 自动更新器 (修复版)
+ * Fix: 修复 ScriptEngine.getSourceFile() 报错
+ * Ref: 参考小社脚本更新逻辑
  */
 
-"ui";
-
-// [Fix] 定义当前脚本所在目录，替代 getSourceFile()
-// 在 AutoJs6/Pro 中，files.cwd() 通常就是项目根目录
-const CURRENT_DIR = files.cwd();
-
-var color = "#009688";
-var frameColor = "#711111";
-
-ui.layout(
-    <frame>
-        <vertical>
-            <appbar background="{{color}}">
-                <toolbar id="toolbar" title="脚本自动更新 (修复版)" />
-            </appbar>
-            <card w="*" h="auto" margin="10 5" cardCornerRadius="2dp" cardElevation="1dp">
-                <vertical padding="15">
-                    <text text="当前版本信息" textSize="18sp" textColor="{{color}}" textStyle="bold" />
-                    <linear>
-                        <text text="本地版本：" textColor="black" />
-                        <text id="localVer" text="读取中..." textColor="#757575" />
-                    </linear>
-                    <linear>
-                        <text text="最新版本：" textColor="black" />
-                        <text id="remoteVer" text="等待检测..." textColor="#757575" />
-                    </linear>
-                    <text id="verDesc" text="" marginTop="5" textColor="#9e9e9e" size="12" />
-                </vertical>
-            </card>
-
-            <card w="*" h="auto" margin="10 5" cardCornerRadius="2dp" cardElevation="1dp">
-                <vertical padding="15">
-                    <text text="更新源设置" textSize="18sp" textColor="{{color}}" textStyle="bold" />
-                    <radiogroup id="sourceGroup" orientation="vertical">
-                        <radio id="src_github" text="GitHub (GhProxy代理)" checked="true" />
-                        <radio id="src_gitee" text="Gitee (国内极速)" />
-                    </radiogroup>
-                </vertical>
-            </card>
-
-            <button id="checkBtn" text="检测更新" style="Widget.AppCompat.Button.Colored" margin="10 0" />
-            <button id="updateBtn" text="开始更新 (覆盖安装)" style="Widget.AppCompat.Button.Colored" margin="10 0" enabled="false" />
-            
-            <text id="log" margin="10" color="#757575" />
-        </vertical>
-    </frame>
-);
-
-// 全局配置
-var ProjectConfig = {
-    // 仓库地址
-    github_url: "https://github.com/Yaoxizzz/Taobao-AutoJs6",
-    gitee_url: "https://gitee.com/Yaoxizzz/Taobao-AutoJs6", // 假设存在，实际以你提供的为准
-    // 加速代理
-    proxy_url: "https://ghproxy.net/",
-    // 项目配置文件路径
-    config_path: files.join(CURRENT_DIR, "project.json"),
-    version_path: files.join(CURRENT_DIR, "version"),
-    // 下载暂存路径
-    download_path: files.join(CURRENT_DIR, "update_temp.zip")
+var projectConfig = {
+    // 你的 GitHub 用户名
+    user: "Yaoxizzz",
+    // 你的仓库名称
+    repo: "Taobao-AutoJs6",
+    // 当前分支
+    branch: "main", 
+    // 版本文件路径
+    versionFile: "version",
+    // 项目配置文件
+    projectFile: "【TB】项目配置.json"
 };
 
-// 绑定事件
-ui.checkBtn.click(() => threads.start(checkUpdate));
-ui.updateBtn.click(() => threads.start(doUpdate));
+// [Fix] 获取当前脚本所在目录的兼容写法
+var currentEngine = engines.myEngine();
+var currentPath = currentEngine.source ? files.cwd() : files.getSdcardPath() + "/脚本/淘宝全能助手";
+// 确保路径以 / 结尾
+if (!currentPath.endsWith("/")) currentPath += "/";
 
-// 初始化
-init();
+// 代理地址（参考日志中选中的加速器）
+var proxyUrl = "https://ghproxy.net/";
+var baseUrl = "https://github.com/" + projectConfig.user + "/" + projectConfig.repo + "/raw/" + projectConfig.branch + "/";
 
-function init() {
-    // 读取本地版本
-    let localVer = "0.0.0";
-    if (files.exists(ProjectConfig.version_path)) {
-        localVer = files.read(ProjectConfig.version_path).trim();
-    } else if (files.exists(ProjectConfig.config_path)) {
-        try {
-            let json = JSON.parse(files.read(ProjectConfig.config_path));
-            localVer = json.versionName || json.version || "0.0.0";
-        } catch (e) {}
+console.show();
+log(">>>>>→ 更新器启动 ←<<<<<");
+log("工作目录: " + currentPath);
+
+// 主入口
+main();
+
+function main() {
+    // 1. 检查网络
+    if (!checkNetwork()) {
+        toastLog("网络不可用，请检查网络连接");
+        return;
     }
-    ui.run(() => {
-        ui.localVer.setText(localVer);
-        logUi("当前目录: " + CURRENT_DIR);
-    });
-}
 
-function getBaseUrl() {
-    if (ui.src_github.isChecked()) {
-        return ProjectConfig.proxy_url + ProjectConfig.github_url + "/archive/refs/heads/main.zip";
-    } else {
-        // Gitee 逻辑暂略，通常 Gitee 不需要代理
-        return ProjectConfig.gitee_url + "/repository/archive/main.zip";
+    // 2. 获取云端版本号
+    log("--→ 正在检查云端版本...");
+    var remoteVersion = getRemoteVersion();
+    if (!remoteVersion) {
+        log("❌ 无法获取云端版本，请检查网络或代理");
+        return;
     }
-}
 
-function getVersionUrl() {
-    if (ui.src_github.isChecked()) {
-        return ProjectConfig.proxy_url + "https://raw.githubusercontent.com/Yaoxizzz/Taobao-AutoJs6/main/version";
-    } else {
-        return ProjectConfig.gitee_url + "/raw/main/version";
-    }
-}
-
-function checkUpdate() {
-    logUi("正在检测更新...");
-    let url = getVersionUrl();
-    try {
-        let res = http.get(url);
-        if (res.statusCode == 200) {
-            let remoteVer = res.body.string().trim();
-            ui.run(() => {
-                ui.remoteVer.setText(remoteVer);
-                let current = ui.localVer.getText().toString();
-                if (compareVersion(remoteVer, current) > 0) {
-                    logUi("发现新版本！");
-                    ui.updateBtn.setEnabled(true);
-                    ui.verDesc.setText("建议立即更新");
-                } else {
-                    logUi("已是最新版本");
-                    ui.verDesc.setText("无需更新");
-                }
-            });
-        } else {
-            logUi("检测失败: " + res.statusMessage);
-        }
-    } catch (e) {
-        logUi("检测出错: " + e.message);
-    }
-}
-
-function doUpdate() {
-    let downloadUrl = getBaseUrl();
-    logUi("开始下载: " + downloadUrl);
+    // 3. 获取本地版本号
+    var localVersion = getLocalVersion();
     
+    log("本地版本: " + localVersion);
+    log("云端版本: " + remoteVersion);
+
+    if (versionCompare(remoteVersion, localVersion) > 0) {
+        log("💡 发现新版本，准备更新...");
+        // 4. 开始更新流程
+        updateProject();
+    } else {
+        log("✅ 当前已是最新版本");
+        toast("当前已是最新版本");
+    }
+    
+    // 延迟关闭控制台
+    sleep(3000);
+    console.hide();
+}
+
+/**
+ * 检查网络连接
+ */
+function checkNetwork() {
     try {
-        // 1. 下载 ZIP
-        let res = http.get(downloadUrl);
-        if (res.statusCode != 200) {
-            logUi("下载失败: HTTP " + res.statusCode);
-            return;
-        }
-        files.writeBytes(ProjectConfig.download_path, res.body.bytes());
-        logUi("下载完成，准备解压...");
-
-        // 2. 解压
-        // [Fix] 使用 $zip 模块或标准解压
-        // 注意：files.join(CURRENT_DIR) 确保解压到当前目录
-        $zip.unzip(ProjectConfig.download_path, CURRENT_DIR);
-        
-        logUi("解压完成！");
-
-        // 3. 处理文件夹嵌套问题
-        // GitHub 下载的 zip 通常会多一层 "RepoName-main" 的文件夹
-        // 我们需要把里面的内容移动出来
-        let unzipDirName = "Taobao-AutoJs6-main"; // 根据仓库名推测
-        let unzipDirPath = files.join(CURRENT_DIR, unzipDirName);
-        
-        if (files.exists(unzipDirPath)) {
-            logUi("正在整理文件结构...");
-            let list = files.listDir(unzipDirPath);
-            for (let i = 0; i < list.length; i++) {
-                let fileName = list[i];
-                let src = files.join(unzipDirPath, fileName);
-                let dest = files.join(CURRENT_DIR, fileName);
-                files.move(src, dest);
-            }
-            files.removeDir(unzipDirPath);
-        }
-
-        // 4. 清理
-        files.remove(ProjectConfig.download_path);
-        
-        logUi("更新成功！请重启脚本。");
-        toast("更新成功！");
-        
+        http.get("www.baidu.com", { timeout: 3000 });
+        return true;
     } catch (e) {
-        logUi("更新失败: " + e);
-        console.error(e);
+        return false;
     }
 }
 
-function compareVersion(v1, v2) {
-    if (!v1 || !v2) return 0;
-    let v1arr = v1.split(".");
-    let v2arr = v2.split(".");
-    for (let i = 0; i < Math.max(v1arr.length, v2arr.length); i++) {
-        let n1 = parseInt(v1arr[i] || 0);
-        let n2 = parseInt(v2arr[i] || 0);
-        if (n1 > n2) return 1;
-        if (n1 < n2) return -1;
+/**
+ * 获取云端版本号
+ */
+function getRemoteVersion() {
+    var url = proxyUrl + baseUrl + projectConfig.versionFile;
+    try {
+        var res = http.get(url, { timeout: 5000 });
+        if (res.statusCode == 200) {
+            return res.body.string().trim();
+        }
+    } catch (e) {
+        log("获取版本号失败: " + e.message);
+    }
+    return null;
+}
+
+/**
+ * 获取本地版本号
+ */
+function getLocalVersion() {
+    var vFile = files.join(currentPath, projectConfig.versionFile);
+    if (files.exists(vFile)) {
+        return files.read(vFile).trim();
+    }
+    return "0.0.0"; // 如果没有文件，视为最旧版本
+}
+
+/**
+ * 版本号比较
+ * return 1: v1 > v2
+ * return -1: v1 < v2
+ * return 0: v1 == v2
+ */
+function versionCompare(v1, v2) {
+    var a = v1.split('.'), b = v2.split('.');
+    var len = Math.max(a.length, b.length);
+    for (var i = 0; i < len; i++) {
+        var num1 = parseInt(a[i]) || 0;
+        var num2 = parseInt(b[i]) || 0;
+        if (num1 > num2) return 1;
+        if (num1 < num2) return -1;
     }
     return 0;
 }
 
-function logUi(msg) {
-    ui.run(() => {
-        ui.log.setText(ui.log.getText() + "\n" + msg);
-        // console.log(msg);
-    });
+/**
+ * 执行项目更新
+ */
+function updateProject() {
+    // 需要更新的文件列表，这里简化处理，更新核心文件
+    // 实际项目中可以通过读取 project.json 或 recursive list 来获取
+    // 暂时硬编码几个核心文件，参考你的文件列表
+    var fileList = [
+        "version",
+        "README.md",
+        "【TB】一键启动.js",
+        "【TB】一键更新.js",
+        "【TB】项目配置.json",
+        "modules/Config.js",
+        "modules/SignTask.js",
+        "modules/Utils.js"
+    ];
+
+    var successCount = 0;
+    
+    for (var i = 0; i < fileList.length; i++) {
+        var filePath = fileList[i];
+        var downloadUrl = proxyUrl + baseUrl + filePath;
+        var localPath = files.join(currentPath, filePath);
+
+        log("⬇️ 正在更新: " + filePath);
+        
+        var content = downloadFile(downloadUrl);
+        if (content) {
+            files.ensureDir(localPath);
+            files.write(localPath, content);
+            log("✅ 更新成功: " + filePath);
+            successCount++;
+        } else {
+            log("❌ 更新失败: " + filePath);
+        }
+        sleep(200); // 避免请求过快
+    }
+
+    log("----------------------------");
+    log("更新完成! 成功: " + successCount + "/" + fileList.length);
+    
+    if (successCount == fileList.length) {
+        toastLog("全部文件更新完毕！请重新启动脚本。");
+    } else {
+        toastLog("部分文件更新失败，请重试。");
+    }
+}
+
+/**
+ * 下载文件内容
+ */
+function downloadFile(url) {
+    for (var i = 0; i < 3; i++) { // 重试3次
+        try {
+            var res = http.get(url, { timeout: 10000 });
+            if (res.statusCode == 200) {
+                return res.body.string();
+            }
+        } catch (e) {
+            log("下载尝试 " + (i + 1) + " 失败: " + e.message);
+        }
+        sleep(1000);
+    }
+    return null;
 }
