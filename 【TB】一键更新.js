@@ -1,7 +1,7 @@
 /**
  * @name 【TB】一键更新
  * @version 7.0.0
- * @description 核心更新器：海量代理池 + 自身热更新 + 纯净退出
+ * @description 核心更新器：拉取公益节点 + 自身热更新 + 纯净退出
  */
 
 // ================= 用户配置 =================
@@ -9,15 +9,15 @@ const CONFIG = {
     user: "Yaoxizzz",
     repo: "Taobao-AutoJs6",
     branch: "main",
-    installDir: "/sdcard/脚本/淘宝全能助手/", // 必须以 / 结尾
+    installDir: "/sdcard/脚本/淘宝全能助手/", 
     selfName: "【TB】一键更新.js" 
 };
 
 // 业务文件清单 [远程文件名, 本地文件名]
-// 注意：GitHub上的路径必须完全匹配
+// 本地文件名我做了规范化处理，方便 modules 调用
 const TASK_FILES = [
-    ["【TB】项目配置.json", "project.json"],  // 映射为标准名
-    ["【TB】一键启动.js", "main.js"],         // 映射为标准名
+    ["【TB】项目配置.json", "project.json"],
+    ["【TB】一键启动.js", "main.js"],
     ["modules/Config.js", "modules/Config.js"],
     ["modules/Utils.js", "modules/Utils.js"],
     ["modules/SignTask.js", "modules/SignTask.js"]
@@ -57,11 +57,12 @@ function log(msg) {
     let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
     console.log(msg);
     ui.run(() => {
-        let old = win.status.getText();
-        win.status.setText(old + "\n" + msg);
-        // 保持显示最新的几行
-        if(win.status.getLineCount() > 8) {
-            win.status.setText(msg); 
+        if (win && win.status) {
+            let old = win.status.getText();
+            win.status.setText(old + "\n" + msg);
+            if(win.status.getLineCount() > 8) {
+                win.status.setText(msg); 
+            }
         }
     });
 }
@@ -71,11 +72,12 @@ var Network = {
     pool: [].concat(SEED_MIRRORS),
     bestMirror: null,
 
-    // 1. 获取公益梯子 (模仿小社脚本)
+    // 1. 获取公益梯子 (模仿小社脚本逻辑)
     fetchLadder: function() {
         log(">>>>>→ 代理池初始化 ←<<<<<");
         log("--→ 内置种子节点: " + SEED_MIRRORS.length);
         
+        // 这是一个长期维护的公益节点列表
         let ladderUrl = "wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt";
         let fetched = false;
 
@@ -90,6 +92,7 @@ var Network = {
                     let count = 0;
                     for (let line of lines) {
                         line = line.trim();
+                        // 简单的URL校验
                         if (line.startsWith("http")) {
                             this.pool.push(line.endsWith("/") ? line : line + "/");
                             count++;
@@ -110,16 +113,13 @@ var Network = {
         log("--→ 当前可用总数: " + this.pool.length);
     },
 
-    // 2. 优选节点 (包含淘汰机制)
+    // 2. 优选节点
     pickBest: function() {
         log("---→> ★节点极速筛选★ <←---");
-        let minTime = 9999;
         
         // 用 version 文件测速
         let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
         
-        // 为了效率，只测速前20个+随机10个，或者全部测速太慢
-        // 这里采用简单的顺序测速，找到一个能用的就停止，保证速度
         for (let mirror of this.pool) {
             try {
                 let start = new Date().getTime();
@@ -146,6 +146,9 @@ var Network = {
         let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
         let saveFile = files.join(CONFIG.installDir, localPath);
         
+        // 确保文件夹存在 (特别是 modules)
+        files.createWithDirs(saveFile);
+
         try {
             let req = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
             let res = this.client.newCall(req).execute();
@@ -166,7 +169,7 @@ var Network = {
         }
     },
     
-    // 获取文本内容
+    // 获取文本内容 (用于自我更新检查)
     getString: function(remoteName) {
         let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
         try {
@@ -196,23 +199,22 @@ function main() {
     Network.fetchLadder();
     if (!Network.pickBest()) {
         log("⚠️ 网络连接失败，请检查网络！");
-        exit();
+        sleep(2000); win.close(); exit();
     }
 
-    // 3. 自我更新检查 (重要)
+    // 3. 自我更新检查 (核心：先更新更新器自己)
     log(">>>>→ 检查更新器版本 ←<<<<");
     let myPath = files.join(CONFIG.installDir, CONFIG.selfName); // 目标路径
     let currentPath = engines.myEngine().getSourceFile().getPath(); // 当前运行路径
     
     let remoteCode = Network.getString(CONFIG.selfName);
     if (remoteCode && remoteCode.length > 500) {
-        // 读取本地代码对比
         let localCode = files.exists(currentPath) ? files.read(currentPath) : "";
         if (localCode.length != remoteCode.length) {
             log("✨ 发现更新器新版本，正在更新自己...");
             // 更新标准安装目录下的文件
             files.write(myPath, remoteCode);
-            // 如果当前运行的不是安装目录下的，也更新当前运行的
+            // 如果当前运行的不是安装目录下的，也更新当前运行的，防止下次还开旧的
             if (currentPath != myPath) files.write(currentPath, remoteCode);
             
             log("🔄 重启更新器...");
@@ -229,7 +231,6 @@ function main() {
     log(">>>>→ 开始同步业务文件 ←<<<<");
     let success = 0;
     for (let item of TASK_FILES) {
-        // item[0] 是远程文件名(中文)，item[1] 是本地文件名(英文)
         log("同步: " + item[0]);
         if (Network.download(item[0], item[1])) {
             success++;
@@ -239,10 +240,9 @@ function main() {
         sleep(100);
     }
 
-    // 5. 结束
+    // 5. 结束 (不启动主程序，只刷新文件)
     if (success == TASK_FILES.length) {
         log("------→> ★更新完成★ <←------");
-        log("💡 请手动运行 【TB】一键启动.js");
         // 刷新图库，让文件管理器能看到新文件
         media.scanFile(CONFIG.installDir);
     } else {
