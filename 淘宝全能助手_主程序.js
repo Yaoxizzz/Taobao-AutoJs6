@@ -8,13 +8,11 @@ const CONFIG = {
     packageName: "com.taobao.taobao",
     enableLayoutRefresh: true, // 88VIP防卡死开关
     
-    // === 任务开关 (逻辑控制) ===
-    // true: 点击开始后执行 / false: 跳过
+    // === 任务开关 ===
     ENABLE_SIGN: true,      
     ENABLE_TASK: false      
 };
 
-// 运行时全局变量
 var Runtime = {
     w: device.width,
     h: device.height,
@@ -30,7 +28,6 @@ var Utils = {
         if (CONFIG.enableLayoutRefresh) {
             requestScreenCapture(false);
         }
-        // 初始化悬浮窗
         FloatWin.init();
     },
 
@@ -45,7 +42,6 @@ var Utils = {
         }
     },
 
-    // 启动淘宝 (防报错版)
     startApp: function() {
         this.log("启动淘宝...");
         if (!app.launchPackage(CONFIG.packageName)) {
@@ -55,14 +51,12 @@ var Utils = {
         sleep(6000);
     },
 
-    // 强制刷新 (核心技术)
     forceRefresh: function() {
         if (!CONFIG.enableLayoutRefresh) return;
         gestures([0, 50, [Runtime.w/2, Runtime.h/2], [Runtime.w/2, Runtime.h/2+2]]);
         sleep(200);
     },
 
-    // 智能找控件
     findWidget: function(prop, value, timeout) {
         timeout = timeout || 1500;
         let deadLine = new Date().getTime() + timeout;
@@ -70,9 +64,7 @@ var Utils = {
             let obj = null;
             if (prop === "text") obj = textContains(value).findOnce() || descContains(value).findOnce();
             else if (prop === "match") obj = textMatches(value).findOnce() || descMatches(value).findOnce();
-            
             if (obj) return obj;
-            
             if (new Date().getTime() > deadLine - (timeout/2)) this.forceRefresh();
             sleep(200);
         }
@@ -127,7 +119,7 @@ var FloatWin = {
                     <text id="status" text="等待开始..." textColor="#FFFFFF" textSize="12sp" marginTop="5" gravity="center"/>
                     <horizontal gravity="center" marginTop="8">
                         <button id="btn_start" text="开始运行" w="auto" h="40dp" style="Widget.AppCompat.Button.Colored"/>
-                        <button id="btn_stop" text="停止" w="auto" h="40dp" marginLeft="10"/>
+                        <button id="btn_stop" text="退出脚本" w="auto" h="40dp" marginLeft="10"/>
                     </horizontal>
                 </vertical>
             </card>
@@ -135,24 +127,35 @@ var FloatWin = {
 
         Runtime.floatWindow.setPosition(100, 300);
 
-        // 按钮事件
+        // 点击开始：执行任务
         Runtime.floatWindow.btn_start.click(() => {
             if (Runtime.isRunning) return;
             Runtime.isRunning = true;
+            // 隐藏开始按钮，防止重复点击
+            Runtime.floatWindow.btn_start.setVisibility(8); // 8=GONE
+            
             threads.start(function() {
-                MainLogic.run();
-                Runtime.isRunning = false;
-                ui.run(() => { 
-                    try{ Runtime.floatWindow.status.setText("任务结束"); }catch(e){}
-                });
+                try {
+                    MainLogic.run();
+                } catch(e) {
+                    Utils.log("出错: " + e);
+                } finally {
+                    Runtime.isRunning = false;
+                    ui.run(() => { 
+                        try{ 
+                            Runtime.floatWindow.status.setText("任务结束"); 
+                            Runtime.floatWindow.btn_start.setVisibility(0); // 恢复显示
+                        }catch(e){}
+                    });
+                }
             });
         });
 
+        // 点击退出：直接关闭
         Runtime.floatWindow.btn_stop.click(() => {
             exit();
         });
         
-        // 脚本退出时销毁
         events.on("exit", () => {
             if(Runtime.floatWindow) Runtime.floatWindow.close();
         });
@@ -172,11 +175,11 @@ var MainLogic = {
         }
         
         if (CONFIG.ENABLE_TASK) {
-            // 这里放原来的浏览任务逻辑
-            Utils.log("浏览任务未开启");
+            Utils.log("浏览任务暂未开启");
         }
         
         Utils.log("所有流程完毕");
+        toast("结束");
     },
 
     doCoin: function() {
@@ -200,7 +203,7 @@ var MainLogic = {
         if (Utils.clickNode(Utils.findWidget("text", "88VIP"), "进VIP")) {
             Utils.log("进入VIP...");
             sleep(4000);
-            Utils.forceRefresh(); // 核心防卡死
+            Utils.forceRefresh();
             sleep(1000);
             
             if (Utils.findWidget("text", "明日领", 2000)) {
