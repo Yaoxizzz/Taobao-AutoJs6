@@ -1,36 +1,37 @@
 /**
- * @name 淘宝助手_更新工具 V7.0
+ * @name 【TB】一键更新
  * @version 7.0.0
- * @description 纯净更新：多线路下载 -> 覆盖文件 -> 自动退出 (不启动主程序)
+ * @description 核心更新器：海量代理池 + 自身热更新 + 纯净退出
  */
 
-// ================= 配置区 =================
+// ================= 用户配置 =================
 const CONFIG = {
     user: "Yaoxizzz",
     repo: "Taobao-AutoJs6",
     branch: "main",
-    installDir: "/sdcard/脚本/淘宝全能助手/", 
-    selfName: "淘宝任务_自动更新器.js"
+    installDir: "/sdcard/脚本/淘宝全能助手/", // 必须以 / 结尾
+    selfName: "【TB】一键更新.js" 
 };
 
-// 文件清单：[远程路径, 本地路径]
-// 注意：modules 下的文件需要指定子目录
-const FILE_LIST = [
-    ["淘宝_项目配置.json", "project.json"],
-    ["淘宝全能助手_主程序.js", "main.js"],
+// 业务文件清单 [远程文件名, 本地文件名]
+// 注意：GitHub上的路径必须完全匹配
+const TASK_FILES = [
+    ["【TB】项目配置.json", "project.json"],  // 映射为标准名
+    ["【TB】一键启动.js", "main.js"],         // 映射为标准名
     ["modules/Config.js", "modules/Config.js"],
     ["modules/Utils.js", "modules/Utils.js"],
     ["modules/SignTask.js", "modules/SignTask.js"]
 ];
 
+// 种子节点 (用于拉取更大的梯子)
 const SEED_MIRRORS = [
-    "https://mirror.ghproxy.com/",
     "https://ghproxy.net/",
+    "https://mirror.ghproxy.com/",
     "https://github.moeyy.xyz/",
     "https://raw.githubusercontent.com/"
 ];
 
-// ================= UI与网络层 =================
+// ================= 核心层 =================
 
 importClass(java.io.File);
 importClass(java.io.FileOutputStream);
@@ -38,130 +39,225 @@ importClass(okhttp3.OkHttpClient);
 importClass(okhttp3.Request);
 importClass(java.util.concurrent.TimeUnit);
 
-var UI = {
-    win: null,
-    init: function() {
-        this.win = floaty.rawWindow(
-            <card cardCornerRadius="12dp" cardElevation="8dp" bg="#FFFFFF" w="260dp">
-                <vertical padding="16">
-                    <text text="脚本更新器 V7.0" textSize="16sp" textColor="#000000" textStyle="bold"/>
-                    <text id="status" text="正在初始化..." textSize="12sp" textColor="#666666" marginTop="8"/>
-                    <progressbar id="bar" w="*" h="4dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="12"/>
-                    <text id="detail" text="0/0" textSize="10sp" textColor="#999999" gravity="right" marginTop="4"/>
-                </vertical>
-            </card>
-        );
-        this.win.setPosition(device.width/2 - 500, device.height/2 - 400);
-    },
-    update: function(msg, detail) {
-        ui.run(() => {
-            if(this.win) {
-                this.win.status.setText(msg);
-                if(detail) this.win.detail.setText(detail);
-            }
-        });
-    },
-    close: function() {
-        if(this.win) this.win.close();
-    }
-};
+// 悬浮窗 UI
+var win = floaty.rawWindow(
+    <card cardCornerRadius="8dp" cardElevation="6dp" bg="#1A1A1A" w="300dp">
+        <vertical padding="12">
+            <text text="★ 脚本检查更新 ★" textSize="14sp" textColor="#FFD700" textStyle="bold" gravity="center"/>
+            <text id="status" text="正在初始化..." textSize="11sp" textColor="#00FF00" marginTop="8" maxLines="10"/>
+            <progressbar id="progress" w="*" h="2dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="8"/>
+        </vertical>
+    </card>
+);
+win.setPosition(device.width/2 - 150, device.height/4);
+win.setTouchable(false);
+
+function log(msg) {
+    let t = new Date();
+    let time = t.getHours() + ":" + t.getMinutes() + ":" + t.getSeconds();
+    console.log(msg);
+    ui.run(() => {
+        let old = win.status.getText();
+        win.status.setText(old + "\n" + msg);
+        // 保持显示最新的几行
+        if(win.status.getLineCount() > 8) {
+            win.status.setText(msg); 
+        }
+    });
+}
 
 var Network = {
-    client: new OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).build(),
+    client: new OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).build(),
+    pool: [].concat(SEED_MIRRORS),
     bestMirror: null,
 
-    // 1. 测速
-    pickMirror: function() {
-        UI.update("正在优选线路...");
-        // 尝试拉取公益节点列表 (模拟) - 这里简化为直接测速种子节点
-        // 如果需要拉取 wengzhenquan 的列表，逻辑同 V6.0
-        let min = 99999;
+    // 1. 获取公益梯子 (模仿小社脚本)
+    fetchLadder: function() {
+        log(">>>>>→ 代理池初始化 ←<<<<<");
+        log("--→ 内置种子节点: " + SEED_MIRRORS.length);
         
-        for(let m of SEED_MIRRORS) {
+        let ladderUrl = "wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt";
+        let fetched = false;
+
+        for (let seed of SEED_MIRRORS) {
+            let url = seed + "https://raw.githubusercontent.com/" + encodeURI(ladderUrl);
             try {
-                let start = new Date().getTime();
-                let req = new Request.Builder().url(m + CONFIG.user).head().build(); // 简单Head请求测速
+                let req = new Request.Builder().url(url).get().build();
                 let res = this.client.newCall(req).execute();
-                res.close();
-                let cost = new Date().getTime() - start;
-                if(cost < min) {
-                    min = cost;
-                    this.bestMirror = m;
-                    console.log("✅ 优选: " + m + " (" + cost + "ms)");
+                if (res.isSuccessful()) {
+                    let content = res.body().string();
+                    let lines = content.split("\n");
+                    let count = 0;
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (line.startsWith("http")) {
+                            this.pool.push(line.endsWith("/") ? line : line + "/");
+                            count++;
+                        }
+                    }
+                    log("--→ 拉取公益节点: " + count);
+                    fetched = true;
+                    // 去重
+                    this.pool = Array.from(new Set(this.pool));
+                    res.close();
+                    break;
                 }
-            } catch(e) {}
+                res.close();
+            } catch (e) {}
         }
-        return this.bestMirror;
+        
+        if(!fetched) log("⚠️ 拉取公益节点失败，使用内置节点");
+        log("--→ 当前可用总数: " + this.pool.length);
     },
 
-    // 2. 下载
-    download: function(remotePath, localPath) {
-        let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remotePath);
-        let saveFile = files.join(CONFIG.installDir, localPath);
+    // 2. 优选节点 (包含淘汰机制)
+    pickBest: function() {
+        log("---→> ★节点极速筛选★ <←---");
+        let minTime = 9999;
         
-        // 确保目录存在
-        files.createWithDirs(saveFile);
+        // 用 version 文件测速
+        let testPath = "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/version";
+        
+        // 为了效率，只测速前20个+随机10个，或者全部测速太慢
+        // 这里采用简单的顺序测速，找到一个能用的就停止，保证速度
+        for (let mirror of this.pool) {
+            try {
+                let start = new Date().getTime();
+                let req = new Request.Builder().url(mirror + testPath).get().build();
+                let res = this.client.newCall(req).execute();
+                if (res.isSuccessful()) {
+                    let cost = new Date().getTime() - start;
+                    res.close();
+                    log("✅ 选中加速器: " + mirror);
+                    log("⚡ 响应时间: " + cost + " ms");
+                    this.bestMirror = mirror;
+                    return true;
+                }
+                res.close();
+            } catch (e) {
+                // log("❌ 淘汰: " + mirror);
+            }
+        }
+        return false;
+    },
+
+    // 3. 下载文件
+    download: function(remoteName, localPath) {
+        let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
+        let saveFile = files.join(CONFIG.installDir, localPath);
         
         try {
             let req = new Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build();
             let res = this.client.newCall(req).execute();
-            if(!res.isSuccessful()) { res.close(); return false; }
-            
+            if (!res.isSuccessful()) { res.close(); return false; }
+
             let is = res.body().byteStream();
             let fs = new FileOutputStream(saveFile);
-            let buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 4096);
+            let buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192);
             let len;
             while ((len = is.read(buffer)) != -1) fs.write(buffer, 0, len);
             fs.flush(); fs.close(); is.close(); res.close();
-            return true;
-        } catch(e) {
-            console.error(e);
+            
+            // 校验
+            if (files.exists(saveFile) && new File(saveFile).length() > 0) return true;
+            return false;
+        } catch (e) {
             return false;
         }
+    },
+    
+    // 获取文本内容
+    getString: function(remoteName) {
+        let url = this.bestMirror + "https://raw.githubusercontent.com/" + CONFIG.user + "/" + CONFIG.repo + "/" + CONFIG.branch + "/" + encodeURI(remoteName);
+        try {
+            let req = new Request.Builder().url(url).get().build();
+            let res = this.client.newCall(req).execute();
+            if (res.isSuccessful()) {
+                let s = res.body().string();
+                res.close();
+                return s;
+            }
+            res.close();
+        } catch(e){}
+        return null;
     }
 };
 
-// ================= 主流程 =================
+// ================= 主程序 =================
 
 function main() {
-    UI.init();
+    console.show();
+    console.clear();
     
-    // 1. 线路
-    if(!Network.pickMirror()) {
-        UI.update("网络连接失败", "请检查网络");
-        sleep(2000); UI.close(); exit();
+    // 1. 初始化目录
+    files.createWithDirs(CONFIG.installDir);
+    
+    // 2. 准备网络
+    Network.fetchLadder();
+    if (!Network.pickBest()) {
+        log("⚠️ 网络连接失败，请检查网络！");
+        exit();
     }
 
-    // 2. 更新自身 (跳过，假设当前是最新的，为了简化逻辑)
-
-    // 3. 更新业务文件
-    let total = FILE_LIST.length;
-    let success = 0;
+    // 3. 自我更新检查 (重要)
+    log(">>>>→ 检查更新器版本 ←<<<<");
+    let myPath = files.join(CONFIG.installDir, CONFIG.selfName); // 目标路径
+    let currentPath = engines.myEngine().getSourceFile().getPath(); // 当前运行路径
     
-    for(let i=0; i<total; i++) {
-        let remote = FILE_LIST[i][0];
-        let local = FILE_LIST[i][1];
-        UI.update("下载: " + local.split("/").pop(), (i+1) + "/" + total);
-        
-        if(Network.download(remote, local)) {
+    let remoteCode = Network.getString(CONFIG.selfName);
+    if (remoteCode && remoteCode.length > 500) {
+        // 读取本地代码对比
+        let localCode = files.exists(currentPath) ? files.read(currentPath) : "";
+        if (localCode.length != remoteCode.length) {
+            log("✨ 发现更新器新版本，正在更新自己...");
+            // 更新标准安装目录下的文件
+            files.write(myPath, remoteCode);
+            // 如果当前运行的不是安装目录下的，也更新当前运行的
+            if (currentPath != myPath) files.write(currentPath, remoteCode);
+            
+            log("🔄 重启更新器...");
+            sleep(1000);
+            engines.execScriptFile(myPath); // 重启新的自己
+            win.close();
+            exit();
+        } else {
+            log("✅ 更新器已是最新");
+        }
+    }
+
+    // 4. 更新业务文件
+    log(">>>>→ 开始同步业务文件 ←<<<<");
+    let success = 0;
+    for (let item of TASK_FILES) {
+        // item[0] 是远程文件名(中文)，item[1] 是本地文件名(英文)
+        log("同步: " + item[0]);
+        if (Network.download(item[0], item[1])) {
             success++;
+        } else {
+            log("❌ 失败: " + item[0]);
         }
         sleep(100);
     }
 
-    // 4. 结束 (严格执行：不启动主脚本)
-    if(success === total) {
-        UI.update("✅ 更新完成", "即将退出...");
-        media.scanFile(CONFIG.installDir); // 刷新文件系统
-        sleep(2000);
-        UI.close();
-        exit();
+    // 5. 结束
+    if (success == TASK_FILES.length) {
+        log("------→> ★更新完成★ <←------");
+        log("💡 请手动运行 【TB】一键启动.js");
+        // 刷新图库，让文件管理器能看到新文件
+        media.scanFile(CONFIG.installDir);
     } else {
-        UI.update("⚠️ 更新不完整", "成功: " + success + "/" + total);
-        sleep(3000);
-        UI.close();
-        exit();
+        log("⚠️ 更新不完整 (" + success + "/" + TASK_FILES.length + ")");
     }
+
+    sleep(3000);
+    win.close();
+    console.hide();
+    exit();
 }
 
-main();
+try {
+    main();
+} catch (e) {
+    console.error(e);
+    if(win) win.close();
+}
