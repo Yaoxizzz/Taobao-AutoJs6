@@ -5,8 +5,48 @@ var 配置 = require('./TB_配置');
 function now() { return new Date().getTime(); }
 function randInt(min, max) { return min + Math.floor(Math.random() * (max - min + 1)); }
 function sleepRand(base, jitter) { sleep(base + randInt(0, jitter || 200)); }
-function logi(msg) { if (配置.调试.日志) console.log('[TB] ' + msg); }
-function logw(msg) { console.warn('[TB] ' + msg); }
+// 悬浮日志模块（懒加载，避免循环依赖）
+var 悬浮日志 = null;
+
+
+function _获取悬浮日志模块() {
+if (悬浮日志 === null) {
+try { 悬浮日志 = require('./TB_悬浮日志'); }
+catch (e) { 悬浮日志 = false; }
+}
+return 悬浮日志;
+}
+
+
+function _写悬浮日志(level, msg) {
+var L = _获取悬浮日志模块();
+if (L && typeof L.写 === 'function') {
+try { L.写(level, msg); } catch (e) {}
+}
+}
+
+
+function logi(msg) {
+var s = '[TB] ' + msg;
+if (配置.调试 && 配置.调试.日志) console.log(s);
+if (配置.调试 && 配置.调试.悬浮日志) _写悬浮日志('I', s);
+}
+
+
+function logw(msg) {
+var s = '[TB] ' + msg;
+console.warn(s);
+if (配置.调试 && 配置.调试.悬浮日志) _写悬浮日志('W', s);
+}
+
+
+// 脚本结束时可主动关闭悬浮日志（不调用也没事，脚本结束会自动消失）
+function 关闭悬浮日志() {
+var L = _获取悬浮日志模块();
+if (L && typeof L.关闭 === 'function') {
+try { L.关闭(); } catch (e) {}
+}
+}
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
@@ -238,4 +278,5 @@ module.exports = {
   forceStopTaobao: forceStopTaobao,
   requestScreenIfNeeded: requestScreenIfNeeded,
   findImageSafe: findImageSafe
+
 };
