@@ -1,4 +1,23 @@
 // 【TB】一键更新程序.js
+// ========================= 小白必看（1分钟看懂怎么用） =========================
+// 你想要的效果：不靠 version.updateFile 列清单，也能“把 GitHub 仓库整个拉下来”。
+// 这份更新器的策略是：
+//   1) 【优先】用 GitHub API Tree 拉取“仓库全部文件列表”（你仓库里有多少文件，就能列出多少）
+//   2) 再用 RAW 逐文件下载到手机项目目录（避免 codeload/zip 403）
+//   3) 通过 sha 差分：只下载发生变化的文件（更快）
+//
+// 重要：version 文件现在的作用变成“备用方案（fallback）”。
+//   - 如果你运行日志里看到："✅ API Tree 获取成功：xxx 个文件"  => 已经在拉【整个仓库】，version 里只有 3 条也不影响。
+//   - 如果你运行日志里看到："API Tree 获取失败：将退回 version 清单模式" => 说明当前网络/代理访问不了 api.github.com，
+//     这时就只能按 version.updateFile 里列出来的文件更新（你现在写 3 条就只能更新 3 条）。
+//
+// 所以：
+//   A) 想“永远全量拉取整个仓库”——最省事的方式是：保证你的网络/代理能访问 GitHub API（api.github.com）。
+//   B) 如果你经常访问不到 API——就把 version.updateFile 当“应急清单”，至少把核心脚本都列进去（不用列全仓库也行）。
+//
+// 下面代码里我把“哪里改、怎么改”都写成了新手可读的注释。
+// ============================================================================
+
 // AutoJs6 (Rhino/ES5) 版本：
 // ✅ 只保留 1 个悬浮窗（避免你现在看到的“两个悬浮窗”）
 // ✅ 不再下载 GitHub Zip（codeload 很多代理 403），改为 RAW 逐文件下载
@@ -7,38 +26,54 @@
 // ✅ 差分更新：用远端 sha + 本地缓存对比，只下载变更文件
 // ✅ 自身热更新：更新器脚本变了就自我覆盖并重启
 //
-// 参考了你上传的：
-// - 《【TB】一键更新.js》里的：公益梯子 + 热更新 + 悬浮窗日志思路  fileciteturn4file0
-// - 《生成代理2.js》里的：raw/api 分别测速与代理池补充思路          fileciteturn4file1
-
 (function () {
   'use strict';
 
   // ========================= ① 用户配置（你一般只改这里） =========================
   var CONFIG = {
+    // 你的 GitHub 用户名（owner）
+    // 例子： https://github.com/Yaoxizzz/Taobao-AutoJs6
     owner: 'Yaoxizzz',
+
+    // 你的仓库名（repo）
     repo: 'Taobao-AutoJs6',
+
+    // 分支名：一般是 main 或 master
     branch: 'main',
 
-    // 安装目录：默认当前项目目录（你现在就是 /storage/emulated/0/脚本/Taobao-AutoJs6 ）
+    // 安装目录：要把文件“下载到手机哪里”
+    // - 默认 files.cwd() = 当前脚本所在项目目录
+    // - 你现在就是 /storage/emulated/0/脚本/Taobao-AutoJs6
+    //   如果你想更新到别的目录：改成 '/storage/emulated/0/脚本/别的文件夹名'
     installDir: files.cwd(),
 
-    // 统一脚本名（建议你仓库/本地都保持一致）
+    // 统一脚本名（建议：本地和 GitHub 仓库都保持同名同大小写）
+    // ⚠️ 你之前出现了【tb】和【TB】两份脚本，会导致互相覆盖/重启后跑到另一份。
     canonicalSelfName: '【TB】一键更新程序.js',
 
     // 更新策略
-    forceUpdate: false,          // true=全部覆盖下载
-    maxParallel: 4,              // 并发下载线程数
+    // - forceUpdate=true：不管文件有没有变化，全部重新下载覆盖（适合第一次或你想强制修复）
+    // - forceUpdate=false：只下载有变化的文件（推荐日常使用）
+    forceUpdate: false,
 
-    // 文件过滤：默认不排除任何目录（你要“全部文件”）
-    // 如果以后你发现素材太大想跳过，可加：/^淘宝素材\//
+    // 并发下载数：越大越快，但也更容易被网络/代理限速。
+    // 一般手机上 3~6 合理。
+    maxParallel: 4,
+
+    // 文件过滤（排除规则）：不排除=全仓库同步；排除=不下载某些目录/文件
+    // 这里写的是正则：
+    //   /^tmp\//   表示所有 tmp/ 开头的路径都会跳过
+    // 你如果以后觉得“淘宝素材”太大不想每次更新：可以加一条
+    //   /^淘宝素材\//
     exclude: [
       /^\.git\//,
       /^tmp\//
     ],
 
-    // UI
-    showConsole: false           // true=同时输出到 AutoJs 控制台（会多一个窗口）
+    // 是否同时输出到 AutoJs 控制台（console.show）
+    // - false：只有一个悬浮窗（推荐，避免你说的“两个窗口”）
+    // - true ：悬浮窗 + 控制台（会多一个窗口）
+    showConsole: false
   };
 
   // ========================= ② 网络配置（代理前缀池） =========================
@@ -53,12 +88,8 @@
     'https://ghproxy.com/',
     'https://gh.llkk.cc/',
     'https://hub.gitmirror.com/'
-  ];
-
-  // 公益梯子（来自你给的参考脚本路径） fileciteturn4file2
-  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';
-
-  // 额外代理源（来自 生成代理2.js 的思路） fileciteturn4file1
+  ];  // 公益梯子列表（用于扩容代理池，只有在“快筛失败”时才会去拉，避免慢）
+  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';  // 额外代理源（用于补充更多可用前缀，同样只在必要时执行，并有上限，避免慢）
   var PROXY_SOURCES = [
     'https://api.akams.cn/github',
     'https://xiake.pro/static/node.json',
@@ -753,7 +784,28 @@
     // 自身热更新
     selfHotUpdateIfNeeded();
 
-    // 读远端 version（仅用于展示/兜底）
+    // 读远端 version（非常重要：但它现在主要是“备用兜底”）
+// ----------------------------------------------------------------
+// 1) 当【API Tree 可用】时：
+//    - 更新器会直接拿到“仓库全部文件列表”，并不会依赖 version.updateFile 的条数。
+//    - 所以你 version 里只有 3 条，也照样能更新整个仓库。
+//
+// 2) 当【API Tree 不可用】时（比如代理不支持 api.github.com）：
+//    - 更新器会退回读取 version.updateFile，按里面列的文件逐个下载。
+//    - 这时你写 3 条，就只能更新 3 条。
+//
+// 小白怎么写 version？（放在仓库根目录，文件名就叫：version）
+// 推荐写成 JSON（示例）：
+// {
+//   "version": "1.0.3",
+//   "updateFile": [
+//     {"remote": "【TB】一键更新程序.js", "local": "【TB】一键更新程序.js"},
+//     {"remote": "modules/TB_淘宝签到.js", "local": "modules/TB_淘宝签到.js"},
+//     {"remote": "modules/TB_弹窗处理.js", "local": "modules/TB_弹窗处理.js"}
+//   ]
+// }
+// 说明：updateFile 你可以只写“核心文件”做应急清单，不用把全仓库都列出来。
+// ----------------------------------------------------------------
     var vr = Net.rawGetString('version');
     if (vr.ok && vr.body) {
       UI.log('远端 version 获取成功');
