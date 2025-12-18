@@ -26,6 +26,7 @@ function 处理系统权限框() {
   // 常见权限控制器包名（不同 ROM 可能不同），这里只做“弱判断”。
   if (pkg.indexOf('permission') >= 0 || pkg.indexOf('packageinstaller') >= 0) {
     // 优先“允许/仅在使用中允许”
+    工具.logi('检测到系统权限框：' + pkg);
     if (工具.clickByText('仅在使用中允许', 600, '权限框-仅在使用中允许')) return true;
     if (工具.clickByText('允许', 600, '权限框-允许')) return true;
     if (工具.clickByText('始终允许', 600, '权限框-始终允许')) return true;
@@ -61,6 +62,7 @@ function 处理淘宝常见弹窗() {
     var p = 工具.findImageSafe(配置.弹窗.关闭找图, 0.82);
     if (p) {
       工具.smartClick(p.x + 5, p.y + 5);
+      工具.logi('弹窗关闭：找图命中并点击');
       工具.sleepRand(400, 300);
       return true;
     }
@@ -78,4 +80,5 @@ function 处理全部弹窗() {
 
 module.exports = {
   处理全部弹窗: 处理全部弹窗
+
 };
