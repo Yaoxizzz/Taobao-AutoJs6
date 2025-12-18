@@ -1,1 +1,16 @@
-
+ {
+   "seed_prefix": [
+     "",
+     "http:gh.927223.xyz/",
+     "https:ghproxy.net/",
+     "https:mirror.ghproxy.com/",
+     "https:gh-proxy.com/",
+     "https:ghproxy.vip/",
+     "https:ghproxy.site/"
+   ],
+   "proxy_sources": [
+     "https:api.akams.cn/github",
+     "https:git.mxg.pub/api/github/list",
+     "https:yishijie.gitlab.io/ziyuan/gh.txt"
+   ]
+ }
