@@ -1,9 +1,31 @@
 {
-  "version": "1.0.3",
+  "version": "1.0.4",
   "updateFile": [
-    { "remote": "【TB】一键更新程序.js", "local": "【TB】一键更新程序.js" },
-    { "remote": "【TB】淘宝自动签到.js", "local": "【TB】淘宝自动签到.js" },
-    { "remote": "modules/TB_淘宝签到.js", "local": "modules/TB_淘宝签到.js" },
-    { "remote": "modules/TB_弹窗处理.js", "local": "modules/TB_弹窗处理.js" }
+    "README.md",
+    "main.js",
+    "modules/TB_工具.js",
+    "modules/TB_弹窗处理.js",
+    "modules/TB_淘宝签到.js",
+    "modules/TB_配置.js",
+    "modules/TB_酷炫控制台.js",
+    "project.json",
+    "version",
+    "【TB】一键更新程序.js",
+    "【TB】淘宝自动签到.js",
+    "【TB】生成version清单.js",
+    "代理源.json",
+    "淘宝素材/淘宝_88VIP_去签到/crop.png",
+    "淘宝素材/淘宝_88VIP_每日签到/crop.png",
+    "淘宝素材/淘宝_弹窗/crop.png",
+    "淘宝素材/淘宝_弹窗2/crop.png",
+    "淘宝素材/淘宝_红包签到_立即签到/crop.png",
+    "淘宝素材/淘宝_红包签到_连续打卡/crop.png",
+    "淘宝素材/淘宝_红包签到_连续打卡2/crop.png",
+    "淘宝素材/淘宝_红包签到_连续打卡3/crop.png",
+    "淘宝素材/淘宝_连续打卡_点击签到/crop.png",
+    "淘宝素材/淘宝_领淘金币页面_点击签到/crop.png",
+    "淘宝素材/淘宝_首页_88VIP/crop.png",
+    "淘宝素材/淘宝_首页_红包签到/crop.png",
+    "淘宝素材/淘宝_首页_领淘金币/crop.png"
   ]
 }
