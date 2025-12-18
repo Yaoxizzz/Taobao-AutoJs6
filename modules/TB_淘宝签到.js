@@ -123,8 +123,7 @@ var 浮窗日志 = (function () {
 
     _safe(function () {
       ui.run(function () {
-        _safe(function () { win.txt.setText(lines.join('
-')); });
+        _safe(function () { win.txt.setText(lines.join('')); });
       });
     });
   }
