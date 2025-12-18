@@ -1,84 +1,68 @@
 // 【TB】一键更新程序.js
-// ========================= 小白必看（1分钟看懂怎么用） =========================
-// 你想要的效果：不靠 version.updateFile 列清单，也能“把 GitHub 仓库整个拉下来”。
-// 这份更新器的策略是：
-//   1) 【优先】用 GitHub API Tree 拉取“仓库全部文件列表”（你仓库里有多少文件，就能列出多少）
-//   2) 再用 RAW 逐文件下载到手机项目目录（避免 codeload/zip 403）
-//   3) 通过 sha 差分：只下载发生变化的文件（更快）
+// ========================= 小白必看（一定要看） =========================
+// 你要的目标：
+//   ✅ 一键把 GitHub 仓库【所有文件】同步到手机项目目录（不只 3 个 updateFile）
+//   ✅ AutoJs6“运行日志面板”里能看到完整过程（每一步都能定位问题）
+//   ✅ 不再出现“反复更新自己/不停重启”的死循环
 //
-// 重要：version 文件现在的作用变成“备用方案（fallback）”。
-//   - 如果你运行日志里看到："✅ API Tree 获取成功：xxx 个文件"  => 已经在拉【整个仓库】，version 里只有 3 条也不影响。
-//   - 如果你运行日志里看到："API Tree 获取失败：将退回 version 清单模式" => 说明当前网络/代理访问不了 api.github.com，
-//     这时就只能按 version.updateFile 里列出来的文件更新（你现在写 3 条就只能更新 3 条）。
+// 这份更新器有两种工作模式：
+//   【A. 全仓库模式（优先）】GitHub API Tree -> 得到仓库全部文件列表 -> RAW 逐文件下载
+//       你运行日志里会看到："✅ API Tree 获取成功：xxx 个文件"  （这就是全量）
 //
-// 所以：
-//   A) 想“永远全量拉取整个仓库”——最省事的方式是：保证你的网络/代理能访问 GitHub API（api.github.com）。
-//   B) 如果你经常访问不到 API——就把 version.updateFile 当“应急清单”，至少把核心脚本都列进去（不用列全仓库也行）。
+//   【B. 兜底模式（备用）】如果 api.github.com 访问不到 -> 退回读取仓库根目录的 version 文件
+//       只更新 version.updateFile 里列出的文件
+//       你运行日志里会看到："⚠️ API Tree 获取失败：使用 version.updateFile" 
 //
-// 下面代码里我把“哪里改、怎么改”都写成了新手可读的注释。
-// ============================================================================
+// 【version 文件到底怎么用？】
+//   - 如果你能稳定访问 GitHub API：version 可有可无（只是备用）
+//   - 如果你经常访问不到 API：强烈建议保留 version（用我给你的“生成version清单脚本”自动生成全文件列表）
+//
+// 【版本号要怎么改？】
+//   - 你只改 "version": "1.0.3" -> "1.0.4" 就算“发布新版本”。
+//   - 本更新器在“兜底模式”下会比较版本号：版本号变了 => 会强制更新 updateFile 列表里的文件。
+//   - 不需要你手动写每个文件的时间（小白就别折腾时间了）。
+// ===============================================================
 
-// AutoJs6 (Rhino/ES5) 版本：
-// ✅ 只保留 1 个悬浮窗（避免你现在看到的“两个悬浮窗”）
-// ✅ 不再下载 GitHub Zip（codeload 很多代理 403），改为 RAW 逐文件下载
-// ✅ 先快筛（直连/少量种子）→ 失败再扩容代理池（公益梯子/代理源），启动速度更快
-// ✅ 自动列出仓库“全部文件”并同步（优先 GitHub API Tree；不依赖你手写 updateFile 清单）
-// ✅ 差分更新：用远端 sha + 本地缓存对比，只下载变更文件
-// ✅ 自身热更新：更新器脚本变了就自我覆盖并重启
-//
 (function () {
   'use strict';
 
   // ========================= ① 用户配置（你一般只改这里） =========================
   var CONFIG = {
     // 你的 GitHub 用户名（owner）
-    // 例子： https://github.com/Yaoxizzz/Taobao-AutoJs6
     owner: 'Yaoxizzz',
 
     // 你的仓库名（repo）
     repo: 'Taobao-AutoJs6',
 
-    // 分支名：一般是 main 或 master
+    // 分支名：一般 main / master
     branch: 'main',
 
-    // 安装目录：要把文件“下载到手机哪里”
-    // - 默认 files.cwd() = 当前脚本所在项目目录
-    // - 你现在就是 /storage/emulated/0/脚本/Taobao-AutoJs6
-    //   如果你想更新到别的目录：改成 '/storage/emulated/0/脚本/别的文件夹名'
+    // 安装目录：下载到手机哪里（默认当前项目目录）
     installDir: files.cwd(),
 
-    // 统一脚本名（建议：本地和 GitHub 仓库都保持同名同大小写）
-    // ⚠️ 你之前出现了【tb】和【TB】两份脚本，会导致互相覆盖/重启后跑到另一份。
+    // 更新器脚本名（建议你本地和 GitHub 仓库都保持同名同大小写）
     canonicalSelfName: '【TB】一键更新程序.js',
 
-    // 更新策略
-    // - forceUpdate=true：不管文件有没有变化，全部重新下载覆盖（适合第一次或你想强制修复）
-    // - forceUpdate=false：只下载有变化的文件（推荐日常使用）
+    // 强制全量更新（true=全部覆盖下载；false=只更新变更文件）
     forceUpdate: false,
 
-    // 并发下载数：越大越快，但也更容易被网络/代理限速。
-    // 一般手机上 3~6 合理。
+    // 并发下载数：3~6 比较合适
     maxParallel: 4,
 
-    // 文件过滤（排除规则）：不排除=全仓库同步；排除=不下载某些目录/文件
-    // 这里写的是正则：
-    //   /^tmp\//   表示所有 tmp/ 开头的路径都会跳过
-    // 你如果以后觉得“淘宝素材”太大不想每次更新：可以加一条
-    //   /^淘宝素材\//
+    // 排除规则（默认跳过 tmp/）
+    // 如果你以后不想同步大素材目录，可加：/^淘宝素材\//
     exclude: [
       /^\.git\//,
       /^tmp\//
     ],
 
-    // 是否同时输出到 AutoJs 控制台（console.show）
-    // - false：只有一个悬浮窗（推荐，避免你说的“两个窗口”）
-    // - true ：悬浮窗 + 控制台（会多一个窗口）
-    showConsole: false
+    // 是否同时打开控制台窗口（会多一个窗口；一般不用）
+    showConsoleWindow: false
   };
 
   // ========================= ② 网络配置（代理前缀池） =========================
-  // 说明：这里每一项都是“前缀”，会拼接成：prefix + originUrl
-  // 例如： http://gh.927223.xyz/ + https://raw.githubusercontent.com/.../version
+  // 这里每一项都是“前缀”，会拼接成：prefix + originUrl
+  // 例如： http://gh.927223.xyz/ + https://raw.githubusercontent.com/.../project.json
   var SEED_PREFIX = [
     '',
     'http://gh.927223.xyz/',
@@ -88,8 +72,12 @@
     'https://ghproxy.com/',
     'https://gh.llkk.cc/',
     'https://hub.gitmirror.com/'
-  ];  // 公益梯子列表（用于扩容代理池，只有在“快筛失败”时才会去拉，避免慢）
-  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';  // 额外代理源（用于补充更多可用前缀，同样只在必要时执行，并有上限，避免慢）
+  ];
+
+  // 公益梯子列表（只在“快筛失败”时才会去拉，避免慢）
+  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';
+
+  // 额外代理源（只在必要时执行，并有上限，避免慢）
   var PROXY_SOURCES = [
     'https://api.akams.cn/github',
     'https://xiake.pro/static/node.json',
@@ -118,28 +106,37 @@
   }
 
   var clientPing = buildClient(3);
-  var clientText = buildClient(10);
-  var clientBin = buildClient(20);
+  var clientText = buildClient(12);
+  var clientBin = buildClient(25);
 
   var UA = 'Mozilla/5.0 (Linux; Android) AutoJs6-Updater';
+  var LOG_PREFIX = '[TB更新] ';
 
-  // ========================= ④ 单悬浮窗 UI（避免两个窗口） =========================
+  // ========================= ④ 日志：一定输出到“运行日志面板” =========================
+  // 你抱怨“看不到日志”，就是因为之前日志只写到悬浮窗。
+  // 现在：每一条都 console.log 一份（AutoJs6 面板可见），悬浮窗再显示一份。
+
+  // 可选：控制台窗口（一般不需要）
+  if (CONFIG.showConsoleWindow) {
+    try { console.show(); } catch (e0) {}
+  }
+
+  // 悬浮窗（只有一个）
   var UI = (function () {
     var win = null;
-    var lineKeep = 10;
     var lines = [];
-    var minimized = false;
+    var keep = 12;
 
     function tryCreate() {
       try {
         win = floaty.rawWindow(
-          <card cardCornerRadius="10dp" cardElevation="8dp" bg="#151515" w="330dp">
+          <card cardCornerRadius="10dp" cardElevation="8dp" bg="#151515" w="340dp">
             <vertical padding="12">
               <horizontal>
                 <text id="title" text="★ TB 一键更新 ★" textSize="14sp" textColor="#FFD700" textStyle="bold" w="*"/>
                 <text id="drag" text="≡" textSize="16sp" textColor="#AAAAAA" padding="6 0"/>
               </horizontal>
-              <text id="status" text="初始化..." textSize="11sp" textColor="#00FF00" marginTop="8" maxLines="10"/>
+              <text id="status" text="准备中..." textSize="11sp" textColor="#00FF00" marginTop="8" maxLines="12"/>
               <progressbar id="bar" w="*" h="3dp" indeterminate="true" style="@style/Base.Widget.AppCompat.ProgressBar.Horizontal" marginTop="8"/>
               <horizontal marginTop="10" gravity="right">
                 <button id="btnMini" text="收起" w="90dp"/>
@@ -172,11 +169,12 @@
           return false;
         });
 
+        var mini = false;
         win.btnMini.on('click', function () {
           ui.run(function () {
-            minimized = !minimized;
+            mini = !mini;
             try {
-              if (minimized) {
+              if (mini) {
                 win.status.setVisibility(8);
                 win.bar.setVisibility(8);
                 win.btnMini.setText('展开');
@@ -190,7 +188,7 @@
         });
 
         win.btnClose.on('click', function () {
-          try { if (win) win.close(); } catch (e3) {}
+          try { win.close(); } catch (e3) {}
           exit();
         });
 
@@ -201,14 +199,13 @@
       }
     }
 
-    function setTitle(t) {
+    function append(msg) {
       if (!win) return;
-      ui.run(function () { try { win.title.setText(String(t)); } catch (e) {} });
-    }
-
-    function setIndeterminate(b) {
-      if (!win) return;
-      ui.run(function () { try { win.bar.setIndeterminate(!!b); } catch (e) {} });
+      lines.push(String(msg));
+      if (lines.length > keep) lines.shift();
+      ui.run(function () {
+        try { win.status.setText(lines.join('\n')); } catch (e) {}
+      });
     }
 
     function setProgress(cur, total) {
@@ -222,14 +219,10 @@
       });
     }
 
-    function log(msg) {
-      msg = String(msg);
-      if (CONFIG.showConsole) console.log(msg);
+    function indeterminate(b) {
       if (!win) return;
-      lines.push(msg);
-      if (lines.length > lineKeep) lines.shift();
       ui.run(function () {
-        try { win.status.setText(lines.join('\n')); } catch (e) {}
+        try { win.bar.setIndeterminate(!!b); } catch (e) {}
       });
     }
 
@@ -238,35 +231,28 @@
       win = null;
     }
 
-    // 初始化
-    var ok = tryCreate();
-    if (!ok) {
-      // 没有悬浮窗权限就退回控制台（只开一个）
-      CONFIG.showConsole = true;
-      console.show();
-      console.clear();
-    } else {
-      // 有悬浮窗时，避免你看到第二个“控制台窗口”
-      try { console.hide(); } catch (eHide) {}
-    }
+    tryCreate();
 
     return {
-      setTitle: setTitle,
-      setIndeterminate: setIndeterminate,
+      append: append,
       setProgress: setProgress,
-      log: log,
+      indeterminate: indeterminate,
       close: close
     };
   })();
+
+  function LOG(msg) {
+    msg = String(msg);
+    console.log(LOG_PREFIX + msg);
+    UI.append(msg);
+  }
 
   function sleepSafe(ms) { try { sleep(ms); } catch (e) {} }
 
   function normalizePrefix(p) {
     p = String(p || '').trim();
     if (!p) return '';
-    // 如果有人把 raw.githubusercontent.com 当“前缀”，会拼错，直接废掉
     if (/^https?:\/\/raw\.githubusercontent\.com\/?$/i.test(p)) return '';
-    // 统一尾部 /
     p = p.replace(/\/+$/, '') + '/';
     return p;
   }
@@ -293,18 +279,14 @@
   }
 
   function fileExistsAndNonEmpty(p) {
-    try {
-      return files.exists(p) && (new File(p).length() > 0);
-    } catch (e) {
-      return false;
-    }
+    try { return files.exists(p) && (new File(p).length() > 0); } catch (e) { return false; }
   }
 
   function createDirsForFile(p) {
     try { files.createWithDirs(p); } catch (e) {}
   }
 
-  // ========================= ⑤ HTTP 层 =========================
+  // ========================= ⑤ HTTP =========================
   function httpGetString(url, client) {
     client = client || clientText;
     var req = new Request.Builder().url(url).header('User-Agent', UA).get().build();
@@ -334,9 +316,7 @@
         try { if (res) res.close(); } catch (e0) {}
         return false;
       }
-
       createDirsForFile(saveFile);
-
       var is = res.body().byteStream();
       var fos = new FileOutputStream(saveFile);
       var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192);
@@ -348,7 +328,6 @@
       fos.close();
       is.close();
       res.close();
-
       return fileExistsAndNonEmpty(saveFile);
     } catch (e) {
       try { if (res) res.close(); } catch (e1) {}
@@ -356,14 +335,12 @@
     }
   }
 
-  // ========================= ⑥ URL 构造 =========================
+  // ========================= ⑥ URL =========================
   function originRaw(path) {
-    // 用 refs/heads（你提到的形式）
     return 'https://raw.githubusercontent.com/' + CONFIG.owner + '/' + CONFIG.repo + '/refs/heads/' + CONFIG.branch + '/' + encodeURI(path);
   }
 
   function originApi(path) {
-    // path: /repos/... or full endpoint
     return 'https://api.github.com' + path;
   }
 
@@ -373,16 +350,39 @@
     return prefix + origin;
   }
 
-  // ========================= ⑦ 代理池管理（快筛优先） =========================
+  // ========================= ⑦ 缓存（用于 sha 差分 + 兜底版本号） =========================
+  var Cache = {
+    path: null,
+    map: {},
+    load: function () {
+      this.path = files.join(CONFIG.installDir, 'tmp', '更新缓存.json');
+      try {
+        if (files.exists(this.path)) {
+          var txt = String(files.read(this.path));
+          var j = safeJsonParse(txt);
+          if (j && typeof j === 'object') this.map = j;
+        }
+      } catch (e) {
+        this.map = {};
+      }
+    },
+    save: function () {
+      try {
+        createDirsForFile(this.path);
+        files.write(this.path, JSON.stringify(this.map, null, 2));
+      } catch (e) {}
+    }
+  };
+
+  // ========================= ⑧ 代理池（快筛优先） =========================
   var Net = {
     rawPrefixPool: uniq(SEED_PREFIX.map(normalizePrefix)),
     apiPrefixPool: uniq(SEED_PREFIX.map(normalizePrefix)),
     bestRaw: null,
     bestApi: null,
 
-    // 快速测试：并发测试前 N 个前缀，返回最快一个
     fastPick: function (prefixPool, testOriginUrl, tag) {
-      var N = Math.min(prefixPool.length, 10);
+      var N = Math.min(prefixPool.length, 6);
       var latch = new CountDownLatch(N);
       var best = { prefix: null, cost: 999999 };
       var lock = threads.lock();
@@ -410,24 +410,18 @@
         })(prefixPool[i]);
       }
 
-      // 等待（最多 4s）
-      latch.await(4, TimeUnit.SECONDS);
+      latch.await(2, TimeUnit.SECONDS);
       if (best.prefix !== null) {
-        UI.log('✅ ' + tag + ' 选中加速器: ' + (best.prefix || '直连') + ' (' + best.cost + 'ms)');
+        LOG('✅ ' + tag + ' 选中加速器: ' + (best.prefix || '直连') + ' (' + best.cost + 'ms)');
         return best.prefix;
       }
       return null;
     },
 
-    // 拉公益梯子（只在必要时执行）
-    fetchLadderIfNeeded: function () {
-      UI.log('>>>>>→ 代理池初始化 ←<<<<<');
-      UI.log('--→ 内置种子节点: ' + this.rawPrefixPool.length);
-
+    fetchLadder: function () {
+      LOG('>>>>>→ 拉取公益节点（只有必要时才会做） ←<<<<<');
       var ladderOrigin = 'https://raw.githubusercontent.com/' + encodeURI(LADDER_RAW_PATH);
-      var fetched = false;
 
-      // 只用少量种子去拉，避免你说的“慢”
       var seeds = [
         'http://gh.927223.xyz/',
         'https://ghproxy.net/',
@@ -448,22 +442,20 @@
               this.rawPrefixPool.push(normalizePrefix(line));
               this.apiPrefixPool.push(normalizePrefix(line));
               add++;
+              if (add >= 80) break;
             }
           }
           this.rawPrefixPool = uniq(this.rawPrefixPool);
           this.apiPrefixPool = uniq(this.apiPrefixPool);
-          UI.log('--→ 拉取公益节点: ' + add);
-          UI.log('--→ 当前可用总数: ' + this.rawPrefixPool.length);
-          fetched = true;
-          break;
+          LOG('--→ 公益节点追加: ' + add + '；总数=' + this.rawPrefixPool.length);
+          return;
         }
       }
-
-      if (!fetched) UI.log('⚠️ 拉取公益节点失败（继续用种子节点）');
+      LOG('⚠️ 公益节点拉取失败（继续用种子节点）');
     },
 
-    // 补充代理源（只在必要时执行，且有上限，避免慢）
-    fetchProxySourcesIfNeeded: function () {
+    fetchProxySources: function () {
+      LOG('>>>>>→ 代理源补充（只有必要时才会做） ←<<<<<');
       var add = 0;
       for (var i = 0; i < PROXY_SOURCES.length; i++) {
         var src = PROXY_SOURCES[i] + '?t=' + new Date().getTime();
@@ -501,41 +493,41 @@
       if (add > 0) {
         this.rawPrefixPool = uniq(this.rawPrefixPool);
         this.apiPrefixPool = uniq(this.apiPrefixPool);
-        UI.log('--→ 额外代理源补充: ' + add);
-        UI.log('--→ 当前可用总数: ' + this.rawPrefixPool.length);
+        LOG('--→ 代理源追加: ' + add + '；总数=' + this.rawPrefixPool.length);
       }
     },
 
-    // 选 bestRaw/bestApi（先快筛，失败再扩容）
     prepare: function () {
-      UI.setIndeterminate(true);
+      UI.indeterminate(true);
 
-      // 0) 快筛：不拉梯子，先试种子（最省时间）
-      var testRaw = originRaw('version');
-      var testApi = originApi('/repos/' + CONFIG.owner + '/' + CONFIG.repo + '/contents/version?ref=' + CONFIG.branch);
+      // 注意：version 不是必需文件，所以测试用 project.json（你仓库必有）
+      var testRaw = originRaw('project.json');
 
+      // API 测试用仓库信息接口（不依赖 version 文件）
+      var testApi = originApi('/repos/' + CONFIG.owner + '/' + CONFIG.repo);
+
+      LOG('---→ 节点快筛（不拉梯子）');
       this.bestRaw = this.fastPick(this.rawPrefixPool, testRaw, 'RAW');
       this.bestApi = this.fastPick(this.apiPrefixPool, testApi, 'API');
 
-      // 1) RAW 失败才拉公益梯子
       if (this.bestRaw === null) {
-        this.fetchLadderIfNeeded();
+        this.fetchLadder();
+        this.bestRaw = this.fastPick(this.rawPrefixPool, testRaw, 'RAW');
+      }
+      if (this.bestRaw === null) {
+        this.fetchProxySources();
         this.bestRaw = this.fastPick(this.rawPrefixPool, testRaw, 'RAW');
       }
 
-      // 2) 还失败才拉第三方代理源
-      if (this.bestRaw === null) {
-        this.fetchProxySourcesIfNeeded();
-        this.bestRaw = this.fastPick(this.rawPrefixPool, testRaw, 'RAW');
-      }
-
-      // 3) API 同理（但 API 不是硬要求：如果拿不到 API，就退回 version 清单模式）
       if (this.bestApi === null) {
-        // 先尝试用 bestRaw 当 API 前缀（很多代理 RAW/API 都能用）
+        // 尝试复用 RAW 的前缀做 API
         this.bestApi = this.fastPick([this.bestRaw].concat(this.apiPrefixPool), testApi, 'API');
       }
 
       if (this.bestRaw === null) return false;
+
+      LOG('RAW 加速器最终选择：' + (this.bestRaw || '直连'));
+      LOG('API 加速器最终选择：' + (this.bestApi === null ? '不可用（将走兜底模式）' : (this.bestApi || '直连')));
       return true;
     },
 
@@ -559,33 +551,7 @@
     }
   };
 
-  // ========================= ⑧ 本地缓存（sha 差分） =========================
-  var Cache = {
-    path: null,
-    map: {},
-
-    load: function () {
-      this.path = files.join(CONFIG.installDir, 'tmp', '更新缓存.json');
-      try {
-        if (files.exists(this.path)) {
-          var txt = String(files.read(this.path));
-          var j = safeJsonParse(txt);
-          if (j && typeof j === 'object') this.map = j;
-        }
-      } catch (e) {
-        this.map = {};
-      }
-    },
-
-    save: function () {
-      try {
-        createDirsForFile(this.path);
-        files.write(this.path, JSON.stringify(this.map, null, 2));
-      } catch (e) {}
-    }
-  };
-
-  // ========================= ⑨ 获取“仓库全文件清单” =========================
+  // ========================= ⑨ 仓库全文件清单（API Tree） =========================
   function getRepoFileListViaApiTree() {
     // 1) refs -> commit sha
     var ref = Net.apiGetJson('/repos/' + CONFIG.owner + '/' + CONFIG.repo + '/git/refs/heads/' + CONFIG.branch);
@@ -612,29 +578,72 @@
     return out;
   }
 
-  function getFileListViaVersionFallback(remoteVersionText) {
-    // 兼容你现在 version 里只有 3 个 updateFile 的情况：仍能更新，但只会下载那 3 个
+  // ========================= ⑩ 兜底：version.updateFile =========================
+  function parseVersionFile(remoteVersionText) {
     var s = String(remoteVersionText || '').trim();
     var j = null;
     if (s && (s[0] === '{' || s[0] === '[')) j = safeJsonParse(s);
-    if (!j || !j.updateFile || !j.updateFile.length) return null;
+    if (!j) return { ok: false };
 
-    var out = [];
-    for (var i = 0; i < j.updateFile.length; i++) {
-      var it = j.updateFile[i];
-      if (!it) continue;
-      var rp = (typeof it === 'string') ? it : (it.remote || it.path || it.name || it.file);
-      var lp = (typeof it === 'string') ? it : (it.local || it.localPath || rp);
-      if (!rp) continue;
-      if (matchExclude(rp)) continue;
-      out.push({ path: String(rp), local: String(lp), sha: '' });
+    var ver = j.version ? String(j.version) : '';
+    var list = [];
+    if (j.updateFile && j.updateFile.length) {
+      for (var i = 0; i < j.updateFile.length; i++) {
+        var it = j.updateFile[i];
+        var rp = (typeof it === 'string') ? it : (it.remote || it.path || it.name || it.file);
+        var lp = (typeof it === 'string') ? it : (it.local || it.localPath || rp);
+        if (!rp) continue;
+        rp = String(rp);
+        lp = String(lp);
+        if (matchExclude(rp)) continue;
+        list.push({ path: rp, local: lp, sha: '' });
+      }
     }
-    return out;
+
+    return { ok: true, version: ver, list: list };
   }
 
-  // ========================= ⑩ 自身热更新 =========================
+  // ========================= ⑪ 自身热更新（防死循环） =========================
+  function looksLikeJs(code) {
+    code = String(code || '');
+    if (code.length < 800) return false;
+    if (/<html/i.test(code) || /<!doctype/i.test(code)) return false;
+    // 必须包含本脚本标识，避免代理返回“别的东西”导致误覆盖
+    if (code.indexOf('【TB】一键更新程序.js') < 0) return false;
+    if (code.indexOf('GitHub API Tree') < 0 && code.indexOf('API Tree') < 0) return false;
+    return true;
+  }
+
+  function simpleHash(str) {
+    str = String(str || '');
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    }
+    return (h >>> 0);
+  }
+
+  function readSelfMarker() {
+    var p = files.join(CONFIG.installDir, 'tmp', '自更新标记.json');
+    try {
+      if (!files.exists(p)) return null;
+      return safeJsonParse(String(files.read(p)));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeSelfMarker(obj) {
+    var p = files.join(CONFIG.installDir, 'tmp', '自更新标记.json');
+    try {
+      createDirsForFile(p);
+      files.write(p, JSON.stringify(obj, null, 2));
+    } catch (e) {}
+  }
+
   function selfHotUpdateIfNeeded() {
-    UI.log('>>>>→ 检查更新器版本 ←<<<<');
+    LOG('>>>>→ 检查更新器版本 ←<<<<');
 
     var curPath = '';
     var curName = '';
@@ -643,61 +652,65 @@
       curName = engines.myEngine().getSourceFile().getName();
     } catch (e) {}
 
-    // 以“当前正在运行的文件名”为准，避免你出现【tb】/【TB】两份脚本互相覆盖导致混乱
+    // 用当前运行文件名去拉远端（避免【tb】/【TB】错配）
     var selfName = curName || CONFIG.canonicalSelfName;
 
-    // 远端脚本内容
     var rr = Net.rawGetString(selfName);
-    if (!rr.ok || !rr.body || String(rr.body).length < 500) {
-      UI.log('⚠️ 获取远端更新器失败（跳过自我更新）');
+    if (!rr.ok || !rr.body) {
+      LOG('⚠️ 获取远端更新器失败（跳过自我更新）');
       return;
     }
 
     var remoteCode = String(rr.body);
+    if (!looksLikeJs(remoteCode)) {
+      LOG('⚠️ 远端更新器内容不像 JS（可能是代理返回 HTML/拦截页），跳过自我更新');
+      return;
+    }
+
     var localCode = '';
     try { localCode = curPath && files.exists(curPath) ? String(files.read(curPath)) : ''; } catch (e2) {}
 
-    // 用长度+简单 hash，避免误判
-    var need = (localCode.length !== remoteCode.length);
-    if (!need) {
-      // 再做一次 hash（长度相同也可能改了）
-      var h1 = 0, h2 = 0, i;
-      for (i = 0; i < localCode.length; i++) { h1 = (h1 * 131 + localCode.charCodeAt(i)) >>> 0; }
-      for (i = 0; i < remoteCode.length; i++) { h2 = (h2 * 131 + remoteCode.charCodeAt(i)) >>> 0; }
-      need = (h1 !== h2);
+    var remoteH = simpleHash(remoteCode);
+    var localH = simpleHash(localCode);
+
+    if (remoteH === localH) {
+      LOG('✅ 更新器已是最新');
+      return;
     }
 
-    if (need) {
-      UI.log('✨ 发现更新器新版本，正在更新自己...');
-
-      var targetPath = files.join(CONFIG.installDir, CONFIG.canonicalSelfName);
-      try {
-        files.write(targetPath, remoteCode);
-        if (curPath && curPath !== targetPath) {
-          // 同时覆盖当前运行路径，防止你“下一次还在跑旧文件”
-          files.write(curPath, remoteCode);
-        }
-      } catch (e3) {
-        UI.log('❌ 写入更新器失败：' + e3);
-        return;
-      }
-
-      UI.log('🔄 重启更新器...');
-      sleepSafe(800);
-      try {
-        engines.execScriptFile(targetPath);
-      } catch (e4) {
-        UI.log('❌ 重启失败：' + e4);
-      }
-      UI.close();
-      exit();
+    // 防死循环：如果 2 分钟内已经更新到同一个 remoteH，还在变，那就跳过
+    var mk = readSelfMarker();
+    if (mk && mk.remoteHash === remoteH && mk.time && (new Date().getTime() - mk.time) < 120000) {
+      LOG('⚠️ 检测到可能的循环自更新，已跳过（避免反复重启）');
+      return;
     }
 
-    UI.log('✅ 更新器已是最新');
+    LOG('✨ 发现更新器新版本，开始自我更新...');
+
+    var targetPath = files.join(CONFIG.installDir, CONFIG.canonicalSelfName);
+    try {
+      files.write(targetPath, remoteCode);
+      if (curPath && curPath !== targetPath) {
+        files.write(curPath, remoteCode);
+      }
+      writeSelfMarker({ remoteHash: remoteH, time: new Date().getTime() });
+    } catch (e3) {
+      LOG('❌ 写入更新器失败：' + e3);
+      return;
+    }
+
+    LOG('🔄 重启更新器...');
+    sleepSafe(800);
+    try { engines.execScriptFile(targetPath); } catch (e4) { LOG('❌ 重启失败：' + e4); }
+    UI.close();
+    exit();
   }
 
-  // ========================= ⑪ 下载执行（并发 + 差分） =========================
-  function downloadAll(filesList) {
+  // ========================= ⑫ 下载执行（并发 + 差分） =========================
+  // forceAll：仅在“兜底模式且版本号变了”时为 true
+  function downloadAll(filesList, forceAll) {
+    forceAll = !!forceAll;
+
     var total = filesList.length;
     var needList = [];
 
@@ -707,17 +720,24 @@
       var lp = item.local || rp;
       var sha = item.sha || '';
 
-      // 差分判断
       var localAbs = files.join(CONFIG.installDir, lp);
-      var need = CONFIG.forceUpdate || (!files.exists(localAbs));
+
+      // 需要更新的判定：
+      // 1) 强制更新（forceUpdate） => 一定下
+      // 2) 兜底模式版本变了（forceAll） => 一定下
+      // 3) 本地不存在 => 一定下
+      // 4) 有 sha => sha 变了才下
+      var need = CONFIG.forceUpdate || forceAll || (!files.exists(localAbs));
       if (!need && sha) {
         need = (Cache.map[rp] !== sha);
       }
+
       if (need) needList.push({ remote: rp, local: lp, sha: sha });
     }
 
-    UI.log('需要更新：' + needList.length + ' / ' + total);
-    UI.setIndeterminate(false);
+    LOG('需要更新：' + needList.length + ' / ' + total);
+
+    UI.indeterminate(false);
     UI.setProgress(0, Math.max(1, needList.length));
 
     if (needList.length === 0) return true;
@@ -741,11 +761,11 @@
 
               var cur = done.incrementAndGet();
               UI.setProgress(cur, needList.length);
-              UI.log((ok ? '✅ ' : '❌ ') + task.remote);
+              LOG((ok ? '✅ ' : '❌ ') + task.remote);
             } catch (e) {
               var cur2 = done.incrementAndGet();
               UI.setProgress(cur2, needList.length);
-              UI.log('❌ ' + task.remote + '（异常）');
+              LOG('❌ ' + task.remote + '（异常）');
             } finally {
               latch.countDown();
             }
@@ -758,89 +778,82 @@
     try { pool.shutdownNow(); } catch (e2) {}
 
     var success = okCount.get();
-    UI.log('完成：' + success + ' / ' + needList.length);
+    LOG('完成：' + success + ' / ' + needList.length);
     return (success === needList.length);
   }
 
-  // ========================= ⑫ 主流程 =========================
+  // ========================= ⑬ 主流程 =========================
   function main() {
-    UI.setTitle('★ TB 一键更新 ★');
-    UI.log('项目目录：' + CONFIG.installDir);
+    LOG('启动更新器');
+    LOG('项目目录：' + CONFIG.installDir);
 
-    // 目录准备
-    try { files.createWithDirs(files.join(CONFIG.installDir, 'tmp', 'x')); files.remove(files.join(CONFIG.installDir, 'tmp', 'x')); } catch (e0) {}
+    // 确保 tmp 目录存在
+    try {
+      files.createWithDirs(files.join(CONFIG.installDir, 'tmp', 'x'));
+      files.remove(files.join(CONFIG.installDir, 'tmp', 'x'));
+    } catch (e0) {}
 
     Cache.load();
 
-    // 网络准备
-    UI.log('--- 网络准备 ---');
+    LOG('--- 网络准备 ---');
     if (!Net.prepare()) {
-      UI.log('❌ 无法连通 RAW（直连/代理都失败）。\n建议：开代理/VPN 或更换网络。');
-      sleepSafe(1500);
+      LOG('❌ 无法连通 RAW（直连/代理都失败）。建议：开代理/VPN 或更换网络');
+      sleepSafe(1200);
       UI.close();
       exit();
     }
 
-    // 自身热更新
+    // 自身热更新（修复：防死循环）
     selfHotUpdateIfNeeded();
 
-    // 读远端 version（非常重要：但它现在主要是“备用兜底”）
-// ----------------------------------------------------------------
-// 1) 当【API Tree 可用】时：
-//    - 更新器会直接拿到“仓库全部文件列表”，并不会依赖 version.updateFile 的条数。
-//    - 所以你 version 里只有 3 条，也照样能更新整个仓库。
-//
-// 2) 当【API Tree 不可用】时（比如代理不支持 api.github.com）：
-//    - 更新器会退回读取 version.updateFile，按里面列的文件逐个下载。
-//    - 这时你写 3 条，就只能更新 3 条。
-//
-// 小白怎么写 version？（放在仓库根目录，文件名就叫：version）
-// 推荐写成 JSON（示例）：
-// {
-//   "version": "1.0.3",
-//   "updateFile": [
-//     {"remote": "【TB】一键更新程序.js", "local": "【TB】一键更新程序.js"},
-//     {"remote": "modules/TB_淘宝签到.js", "local": "modules/TB_淘宝签到.js"},
-//     {"remote": "modules/TB_弹窗处理.js", "local": "modules/TB_弹窗处理.js"}
-//   ]
-// }
-// 说明：updateFile 你可以只写“核心文件”做应急清单，不用把全仓库都列出来。
-// ----------------------------------------------------------------
+    // 获取远端 version（备用 + 兜底版本号判断）
     var vr = Net.rawGetString('version');
+    var verInfo = null;
     if (vr.ok && vr.body) {
-      UI.log('远端 version 获取成功');
+      verInfo = parseVersionFile(vr.body);
+      if (verInfo.ok) {
+        LOG('远端 version 读取成功，version=' + (verInfo.version || '(空)') + '，updateFile=' + verInfo.list.length);
+      } else {
+        LOG('远端 version 存在但不是 JSON（将仅用于“存在性”判断）');
+      }
     } else {
-      UI.log('⚠️ 远端 version 获取失败（不影响 API Tree 模式）');
+      LOG('远端 version 不存在或读取失败（不影响全仓库模式）');
     }
 
-    // 获取仓库全文件清单
-    UI.log('>>>>→ 获取仓库文件清单 ←<<<<');
-
+    // 优先：API Tree 拉全仓库
+    LOG('>>>>→ 获取仓库文件清单 ←<<<<');
     var list = null;
+    var mode = '';
+
     if (Net.bestApi !== null) {
       list = getRepoFileListViaApiTree();
       if (list && list.length) {
-        UI.log('✅ API Tree 获取成功：' + list.length + ' 个文件');
-      } else {
-        UI.log('⚠️ API Tree 获取失败：将退回 version 清单模式');
+        mode = 'apiTree';
+        LOG('✅ API Tree 获取成功：' + list.length + ' 个文件（全仓库模式）');
       }
-    } else {
-      UI.log('⚠️ API 不可用：将退回 version 清单模式');
     }
 
-    // 退回：version updateFile
+    // 兜底：version.updateFile
+    var forceAllFallback = false;
     if (!list || !list.length) {
-      var vf = (vr.ok && vr.body) ? getFileListViaVersionFallback(vr.body) : null;
-      if (vf && vf.length) {
-        // 将 vf 结构统一到 downloadAll 需要的格式
-        var tmp = [];
-        for (var i = 0; i < vf.length; i++) {
-          tmp.push({ path: vf[i].path, local: vf[i].local, sha: '' });
+      mode = 'versionFallback';
+      if (verInfo && verInfo.ok && verInfo.list.length) {
+        list = verInfo.list;
+
+        // 兜底模式：如果远端 version 号变了 => 强制更新列表文件
+        var remoteVer = verInfo.version || '';
+        var localVer = Cache.map._fallbackVersion || '';
+        if (remoteVer && remoteVer !== localVer) {
+          forceAllFallback = true;
+          LOG('⚡ 检测到新版本：' + localVer + ' -> ' + remoteVer + '（兜底模式将强制更新 updateFile 列表）');
+          Cache.map._fallbackVersion = remoteVer;
+        } else {
+          LOG('兜底模式：版本号未变化（只补缺失文件；如需强制可把 CONFIG.forceUpdate=true）');
         }
-        list = tmp;
-        UI.log('✅ 使用 version.updateFile：' + list.length + ' 个文件');
+
+        LOG('⚠️ API Tree 获取失败：使用 version.updateFile：' + list.length + ' 个文件');
       } else {
-        UI.log('❌ 既拿不到 API Tree，也没有可用的 version.updateFile。\n请检查仓库是否存在 version 文件或网络是否可用。');
+        LOG('❌ API Tree 不可用且 version.updateFile 也不可用：无法更新');
         sleepSafe(1500);
         UI.close();
         exit();
@@ -848,28 +861,25 @@
     } else {
       // 统一结构
       var tmp2 = [];
-      for (var j = 0; j < list.length; j++) {
-        tmp2.push({ path: list[j].path, local: list[j].path, sha: list[j].sha });
+      for (var i = 0; i < list.length; i++) {
+        tmp2.push({ path: list[i].path, local: list[i].path, sha: list[i].sha });
       }
       list = tmp2;
     }
 
-    // 开始下载
-    UI.log('>>>>→ 开始同步文件 ←<<<<');
-    var okAll = downloadAll(list);
+    LOG('>>>>→ 开始同步文件 ←<<<<（模式=' + mode + '）');
+    var okAll = downloadAll(list, forceAllFallback);
 
-    // 保存缓存
     Cache.save();
 
-    // 刷新媒体库（让文件管理器更快看到新文件）
     try { media.scanFile(CONFIG.installDir); } catch (e3) {}
 
     if (okAll) {
-      UI.log('------→> ★更新完成★ <←------');
+      LOG('------→> ★更新完成★ <←------');
       try { toast('更新完成！'); } catch (e4) {}
     } else {
-      UI.log('⚠️ 更新完成但有失败项（可再运行一次补齐）');
-      try { toast('更新完成（有失败项，可再运行一次）'); } catch (e5) {}
+      LOG('⚠️ 更新完成但有失败项（再运行一次通常可补齐）');
+      try { toast('更新完成（有失败项）'); } catch (e5) {}
     }
 
     sleepSafe(1200);
@@ -880,9 +890,9 @@
   try {
     main();
   } catch (e) {
-    if (CONFIG.showConsole) console.error(e);
-    UI.log('❌ 异常：' + e);
-    sleepSafe(1500);
+    console.error(LOG_PREFIX + '异常：' + e);
+    LOG('❌ 异常：' + e);
+    sleepSafe(1200);
     UI.close();
   }
 })();
