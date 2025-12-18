@@ -1,91 +1,124 @@
-// 【TB】一键更新程序.js
-// ========================= 小白必看（一定要看） =========================
-// 你要的目标：
-//   ✅ 一键把 GitHub 仓库【所有文件】同步到手机项目目录（不只 3 个 updateFile）
-//   ✅ AutoJs6“运行日志面板”里能看到完整过程（每一步都能定位问题）
-//   ✅ 不再出现“反复更新自己/不停重启”的死循环
+// 【TB】一键更新程序.js  （AutoJs6 / Rhino / ES5）
+// ========================= 小白必看（你关心的 3 个问题） =========================
+// 1) 为什么会出现 tmp 文件夹？
+//    - 这是更新器自己创建的“工作目录”，用来存：下载缓存、sha 差分缓存、代理源缓存、自更新标记。
+//    - 这个 tmp 不需要上传到 GitHub！也不需要你手动删除！
+//    - 你就当它是“更新器的缓存目录”。删除也行，但删除后下次运行会重新生成。
 //
-// 这份更新器有两种工作模式：
-//   【A. 全仓库模式（优先）】GitHub API Tree -> 得到仓库全部文件列表 -> RAW 逐文件下载
-//       你运行日志里会看到："✅ API Tree 获取成功：xxx 个文件"  （这就是全量）
+// 2) 你想要：在 /sdcard/脚本/ 里运行，不要把文件散落一地，而是自动创建 /sdcard/脚本/<仓库名>/
+//    - 已实现：默认开启自动建仓库目录。
+//    - 举例：你在 /sdcard/脚本/ 直接运行本脚本，它会自动创建：/sdcard/脚本/Taobao-AutoJs6/
+//      然后把所有文件同步到那个目录里（目录干净不混乱）。
 //
-//   【B. 兜底模式（备用）】如果 api.github.com 访问不到 -> 退回读取仓库根目录的 version 文件
-//       只更新 version.updateFile 里列出的文件
-//       你运行日志里会看到："⚠️ API Tree 获取失败：使用 version.updateFile" 
-//
-// 【version 文件到底怎么用？】
-//   - 如果你能稳定访问 GitHub API：version 可有可无（只是备用）
-//   - 如果你经常访问不到 API：强烈建议保留 version（用我给你的“生成version清单脚本”自动生成全文件列表）
-//
-// 【版本号要怎么改？】
-//   - 你只改 "version": "1.0.3" -> "1.0.4" 就算“发布新版本”。
-//   - 本更新器在“兜底模式”下会比较版本号：版本号变了 => 会强制更新 updateFile 列表里的文件。
-//   - 不需要你手动写每个文件的时间（小白就别折腾时间了）。
-// ===============================================================
+// 3) 种子节点/代理源都失效怎么办？
+//    - 已实现：支持“远端代理配置文件”自动更新（你只要在仓库根目录放一个 代理源.json）。
+//    - 更新器每次跑通网络后，会拉取 代理源.json 覆盖本地缓存，下一次自动用最新代理列表。
+//    - 我还根据联网检索，补充了几个常见可用的 GitHub 加速前缀（见 SEED_PREFIX）。
+// ============================================================================
 
 (function () {
   'use strict';
 
-  // ========================= ① 用户配置（你一般只改这里） =========================
+  // ========================= ① 你只需要改这里（新手配置区） =========================
   var CONFIG = {
-    // 你的 GitHub 用户名（owner）
     owner: 'Yaoxizzz',
-
-    // 你的仓库名（repo）
     repo: 'Taobao-AutoJs6',
-
-    // 分支名：一般 main / master
     branch: 'main',
 
-    // 安装目录：下载到手机哪里（默认当前项目目录）
+    // 是否自动创建“仓库目录”避免脚本散落
+    // true：如果你在 /sdcard/脚本/ 运行，它会改为 /sdcard/脚本/Taobao-AutoJs6/ 作为安装目录
+    // false：就下载到当前目录（不推荐，会杂乱）
+    autoCreateRepoDir: true,
+
+    // 安装目录：默认当前目录（但如果 autoCreateRepoDir=true，会自动变成 当前目录/仓库名 ）
     installDir: files.cwd(),
 
-    // 更新器脚本名（建议你本地和 GitHub 仓库都保持同名同大小写）
+    // 更新器脚本名（建议本地 & GitHub 同名同大小写）
     canonicalSelfName: '【TB】一键更新程序.js',
 
-    // 强制全量更新（true=全部覆盖下载；false=只更新变更文件）
+    // 强制更新：true=每次都全量覆盖；false=只更新变化文件（推荐）
     forceUpdate: false,
 
-    // 并发下载数：3~6 比较合适
+    // 并发下载数：3~6 比较合理
     maxParallel: 4,
 
-    // 排除规则（默认跳过 tmp/）
+    // 排除规则：tmp/ 默认排除（因为它是缓存目录，不应该从 GitHub 同步）
     // 如果你以后不想同步大素材目录，可加：/^淘宝素材\//
     exclude: [
       /^\.git\//,
       /^tmp\//
     ],
 
-    // 是否同时打开控制台窗口（会多一个窗口；一般不用）
+    // 是否弹出 console.show（会多一个窗口；一般不需要）
     showConsoleWindow: false
   };
 
-  // ========================= ② 网络配置（代理前缀池） =========================
-  // 这里每一项都是“前缀”，会拼接成：prefix + originUrl
-  // 例如： http://gh.927223.xyz/ + https://raw.githubusercontent.com/.../project.json
-  var SEED_PREFIX = [
-    '',
-    'http://gh.927223.xyz/',
-    'https://ghproxy.net/',
-    'https://mirror.ghproxy.com/',
-    'https://github.moeyy.xyz/',
-    'https://ghproxy.com/',
-    'https://gh.llkk.cc/',
-    'https://hub.gitmirror.com/'
-  ];
+  // ========================= ② 常量（你一般不用动） =========================
+  var UA = 'Mozilla/5.0 (Linux; Android) AutoJs6-Updater';
+  var LOG_PREFIX = '[TB更新] ';
 
-  // 公益梯子列表（只在“快筛失败”时才会去拉，避免慢）
-  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';
+  // 更新器工作目录（tmp 目录里再分一个子目录，避免你自己也用 tmp 时冲突）
+  var WORK_SUBDIR = 'TB更新';
 
-  // 额外代理源（只在必要时执行，并有上限，避免慢）
-  var PROXY_SOURCES = [
-    'https://api.akams.cn/github',
-    'https://xiake.pro/static/node.json',
-    'https://git.mxg.pub/api/github/list',
-    'https://yishijie.gitlab.io/ziyuan/gh.txt'
-  ];
+  // 远端“代理配置文件”（可选）：放在你仓库根目录
+  // 文件名建议就叫：代理源.json
+  // 内容示例见本文末尾注释。
+  var REMOTE_PROXY_CONFIG = '代理源.json';
 
-  // ========================= ③ Java/OkHttp 导入 =========================
+  // ========================= ③ 自动创建仓库目录（解决“文件散落很乱”） =========================
+  // 逻辑：
+  // - 如果你当前目录名不是 repo（例如你在 /sdcard/脚本/ 运行）
+  //   就把 installDir 改成：当前目录/repo
+  //   并把脚本复制过去后从新位置启动（让 files.cwd 也变成新目录）
+  function ensureRepoDirBootstrap() {
+    if (!CONFIG.autoCreateRepoDir) return;
+
+    var cwd = files.cwd();
+    var cwdName = '';
+    try { cwdName = new java.io.File(cwd).getName(); } catch (e) {}
+
+    // 如果已经在仓库目录（例如 .../Taobao-AutoJs6），就不动
+    if (cwdName === CONFIG.repo) {
+      CONFIG.installDir = cwd;
+      return;
+    }
+
+    // 否则，目标目录 = 当前目录/仓库名
+    var targetDir = files.join(cwd, CONFIG.repo);
+    try {
+      files.createWithDirs(files.join(targetDir, 'tmp', 'x'));
+      files.remove(files.join(targetDir, 'tmp', 'x'));
+    } catch (e2) {}
+
+    CONFIG.installDir = targetDir;
+
+    // 如果当前脚本不在 targetDir，就复制过去并从那里启动一次（只会发生 1 次）
+    var srcPath = '';
+    try { srcPath = engines.myEngine().getSourceFile().getPath(); } catch (e3) {}
+
+    if (srcPath && srcPath.indexOf(targetDir) !== 0) {
+      var dstPath = files.join(targetDir, CONFIG.canonicalSelfName);
+      try {
+        var code = files.read(srcPath);
+        files.write(dstPath, code);
+      } catch (e4) {
+        // 如果复制失败，就继续在当前目录运行（只是文件会下载到 targetDir）
+        console.log(LOG_PREFIX + '⚠️ 无法复制脚本到仓库目录：' + e4);
+        return;
+      }
+
+      // 从新目录启动并退出本次
+      console.log(LOG_PREFIX + '✅ 已创建仓库目录并迁移更新器：' + targetDir);
+      try { engines.execScriptFile(dstPath); } catch (e5) {
+        console.log(LOG_PREFIX + '❌ 迁移后启动失败：' + e5);
+      }
+      exit();
+    }
+  }
+
+  ensureRepoDirBootstrap();
+
+  // ========================= ④ 依赖导入 =========================
   importClass(java.io.File);
   importClass(java.io.FileOutputStream);
   importClass(java.util.concurrent.TimeUnit);
@@ -109,19 +142,11 @@
   var clientText = buildClient(12);
   var clientBin = buildClient(25);
 
-  var UA = 'Mozilla/5.0 (Linux; Android) AutoJs6-Updater';
-  var LOG_PREFIX = '[TB更新] ';
-
-  // ========================= ④ 日志：一定输出到“运行日志面板” =========================
-  // 你抱怨“看不到日志”，就是因为之前日志只写到悬浮窗。
-  // 现在：每一条都 console.log 一份（AutoJs6 面板可见），悬浮窗再显示一份。
-
-  // 可选：控制台窗口（一般不需要）
+  // ========================= ⑤ 日志：必须在 AutoJs6“运行日志面板”可见 =========================
   if (CONFIG.showConsoleWindow) {
     try { console.show(); } catch (e0) {}
   }
 
-  // 悬浮窗（只有一个）
   var UI = (function () {
     var win = null;
     var lines = [];
@@ -249,14 +274,6 @@
 
   function sleepSafe(ms) { try { sleep(ms); } catch (e) {} }
 
-  function normalizePrefix(p) {
-    p = String(p || '').trim();
-    if (!p) return '';
-    if (/^https?:\/\/raw\.githubusercontent\.com\/?$/i.test(p)) return '';
-    p = p.replace(/\/+$/, '') + '/';
-    return p;
-  }
-
   function uniq(arr) {
     var map = {};
     var out = [];
@@ -265,6 +282,15 @@
       if (!map[k]) { map[k] = true; out.push(arr[i]); }
     }
     return out;
+  }
+
+  function normalizePrefix(p) {
+    p = String(p || '').trim();
+    if (!p) return '';
+    // 防呆：有人会把 raw.githubusercontent.com 当“前缀”，会拼坏
+    if (/^https?:\/\/raw\.githubusercontent\.com\/?$/i.test(p)) return '';
+    p = p.replace(/\/+$/, '') + '/';
+    return p;
   }
 
   function matchExclude(path) {
@@ -286,7 +312,88 @@
     try { files.createWithDirs(p); } catch (e) {}
   }
 
-  // ========================= ⑤ HTTP =========================
+  // ========================= ⑥ 工作目录 / 缓存说明（回答你“tmp 哪来的”） =========================
+  // tmp 目录是更新器自己创建的缓存目录：
+  //   tmp/TB更新/更新缓存.json       -> sha 差分缓存（决定哪些文件需要更新）
+  //   tmp/TB更新/代理源缓存.json     -> 代理/种子节点缓存（下次启动更快）
+  //   tmp/TB更新/自更新标记.json     -> 防止更新器死循环自更新
+  // 不要上传 GitHub；也不用删；删了也没事。
+  var WORK_DIR = files.join(CONFIG.installDir, 'tmp', WORK_SUBDIR);
+  try {
+    files.createWithDirs(files.join(WORK_DIR, 'x'));
+    files.remove(files.join(WORK_DIR, 'x'));
+  } catch (eWD) {}
+
+  // ========================= ⑦ 代理/种子节点（内置 + 自动更新） =========================
+  // 内置种子节点（越稳定越好；脚本会自动测速选最快）
+  // 我根据联网检索补充了：gh-proxy.com / ghproxy.vip / ghproxy.site
+  // 说明：这些服务不保证长期可用，所以我们还做了“远端代理配置”自动更新。
+  var SEED_PREFIX = [
+    '',
+    'http://gh.927223.xyz/',
+    'https://ghproxy.net/',
+    'https://mirror.ghproxy.com/',
+    'https://github.moeyy.xyz/',
+    'https://ghproxy.com/',
+    'https://gh.llkk.cc/',
+    'https://hub.gitmirror.com/',
+    'https://gh-proxy.com/',
+    'https://ghproxy.vip/',
+    'https://ghproxy.site/'
+  ];
+
+  // 公益梯子（只在“快筛失败”时才去拉，避免慢）
+  var LADDER_RAW_PATH = 'wengzhenquan/autojs6/main/tmp/公益梯子[魔法].txt';
+
+  // 额外代理源（用于补充更多前缀；同样只在必要时执行，并限制数量）
+  var PROXY_SOURCES = [
+    'https://api.akams.cn/github',
+    'https://xiake.pro/static/node.json',
+    'https://git.mxg.pub/api/github/list',
+    'https://yishijie.gitlab.io/ziyuan/gh.txt',
+    'https://ghproxy.net/'
+  ];
+
+  // 本地代理缓存（下一次启动会优先用上次最快节点，更快）
+  var ProxyCache = {
+    path: files.join(WORK_DIR, '代理源缓存.json'),
+    data: null,
+    load: function () {
+      try {
+        if (files.exists(this.path)) {
+          var j = safeJsonParse(String(files.read(this.path)));
+          if (j && typeof j === 'object') this.data = j;
+        }
+      } catch (e) {}
+    },
+    save: function () {
+      try {
+        createDirsForFile(this.path);
+        files.write(this.path, JSON.stringify(this.data || {}, null, 2));
+      } catch (e) {}
+    }
+  };
+
+  ProxyCache.load();
+  if (ProxyCache.data) {
+    // 把上次成功/最快的放到最前面（启动更快）
+    if (ProxyCache.data.bestRaw) SEED_PREFIX.unshift(ProxyCache.data.bestRaw);
+    if (ProxyCache.data.seed_prefix && ProxyCache.data.seed_prefix.length) {
+      for (var iSP = 0; iSP < ProxyCache.data.seed_prefix.length; iSP++) {
+        SEED_PREFIX.push(ProxyCache.data.seed_prefix[iSP]);
+      }
+    }
+    if (ProxyCache.data.proxy_sources && ProxyCache.data.proxy_sources.length) {
+      for (var iPS = 0; iPS < ProxyCache.data.proxy_sources.length; iPS++) {
+        PROXY_SOURCES.push(ProxyCache.data.proxy_sources[iPS]);
+      }
+    }
+  }
+
+  SEED_PREFIX = uniq(SEED_PREFIX.map(normalizePrefix));
+  PROXY_SOURCES = uniq(PROXY_SOURCES);
+
+  // ========================= ⑧ HTTP =========================
   function httpGetString(url, client) {
     client = client || clientText;
     var req = new Request.Builder().url(url).header('User-Agent', UA).get().build();
@@ -321,9 +428,7 @@
       var fos = new FileOutputStream(saveFile);
       var buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 8192);
       var len;
-      while ((len = is.read(buffer)) != -1) {
-        fos.write(buffer, 0, len);
-      }
+      while ((len = is.read(buffer)) != -1) fos.write(buffer, 0, len);
       fos.flush();
       fos.close();
       is.close();
@@ -335,7 +440,7 @@
     }
   }
 
-  // ========================= ⑥ URL =========================
+  // ========================= ⑨ URL =========================
   function originRaw(path) {
     return 'https://raw.githubusercontent.com/' + CONFIG.owner + '/' + CONFIG.repo + '/refs/heads/' + CONFIG.branch + '/' + encodeURI(path);
   }
@@ -350,16 +455,14 @@
     return prefix + origin;
   }
 
-  // ========================= ⑦ 缓存（用于 sha 差分 + 兜底版本号） =========================
+  // ========================= ⑩ 缓存（sha 差分 + 兜底版本号） =========================
   var Cache = {
-    path: null,
+    path: files.join(WORK_DIR, '更新缓存.json'),
     map: {},
     load: function () {
-      this.path = files.join(CONFIG.installDir, 'tmp', '更新缓存.json');
       try {
         if (files.exists(this.path)) {
-          var txt = String(files.read(this.path));
-          var j = safeJsonParse(txt);
+          var j = safeJsonParse(String(files.read(this.path)));
           if (j && typeof j === 'object') this.map = j;
         }
       } catch (e) {
@@ -374,10 +477,10 @@
     }
   };
 
-  // ========================= ⑧ 代理池（快筛优先） =========================
+  // ========================= ⑪ 代理池（快筛优先） =========================
   var Net = {
-    rawPrefixPool: uniq(SEED_PREFIX.map(normalizePrefix)),
-    apiPrefixPool: uniq(SEED_PREFIX.map(normalizePrefix)),
+    rawPrefixPool: SEED_PREFIX.slice(),
+    apiPrefixPool: SEED_PREFIX.slice(),
     bestRaw: null,
     bestApi: null,
 
@@ -401,9 +504,7 @@
                   best.cost = cost;
                   best.prefix = p;
                 }
-              } finally {
-                lock.unlock();
-              }
+              } finally { lock.unlock(); }
             }
             latch.countDown();
           });
@@ -419,15 +520,9 @@
     },
 
     fetchLadder: function () {
-      LOG('>>>>>→ 拉取公益节点（只有必要时才会做） ←<<<<<');
+      LOG('>>>>>→ 拉取公益节点（必要时才会做） ←<<<<<');
       var ladderOrigin = 'https://raw.githubusercontent.com/' + encodeURI(LADDER_RAW_PATH);
-
-      var seeds = [
-        'http://gh.927223.xyz/',
-        'https://ghproxy.net/',
-        'https://mirror.ghproxy.com/',
-        ''
-      ];
+      var seeds = ['http://gh.927223.xyz/', 'https://ghproxy.net/', 'https://mirror.ghproxy.com/', ''];
 
       for (var i = 0; i < seeds.length; i++) {
         var p = normalizePrefix(seeds[i]);
@@ -445,17 +540,17 @@
               if (add >= 80) break;
             }
           }
-          this.rawPrefixPool = uniq(this.rawPrefixPool);
-          this.apiPrefixPool = uniq(this.apiPrefixPool);
+          this.rawPrefixPool = uniq(this.rawPrefixPool.map(normalizePrefix));
+          this.apiPrefixPool = uniq(this.apiPrefixPool.map(normalizePrefix));
           LOG('--→ 公益节点追加: ' + add + '；总数=' + this.rawPrefixPool.length);
           return;
         }
       }
-      LOG('⚠️ 公益节点拉取失败（继续用种子节点）');
+      LOG('⚠️ 公益节点拉取失败');
     },
 
     fetchProxySources: function () {
-      LOG('>>>>>→ 代理源补充（只有必要时才会做） ←<<<<<');
+      LOG('>>>>>→ 代理源补充（必要时才会做） ←<<<<<');
       var add = 0;
       for (var i = 0; i < PROXY_SOURCES.length; i++) {
         var src = PROXY_SOURCES[i] + '?t=' + new Date().getTime();
@@ -465,6 +560,9 @@
         var body = String(r.body);
         var json = safeJsonParse(body);
 
+        // 兼容多种格式：
+        // - { data:[{url:"https://..."}, ...] }
+        // - 多行文本，每行一个 https://...
         if (json && json.data && json.data.length) {
           for (var k = 0; k < json.data.length; k++) {
             var u = json.data[k] && json.data[k].url;
@@ -491,8 +589,8 @@
       }
 
       if (add > 0) {
-        this.rawPrefixPool = uniq(this.rawPrefixPool);
-        this.apiPrefixPool = uniq(this.apiPrefixPool);
+        this.rawPrefixPool = uniq(this.rawPrefixPool.map(normalizePrefix));
+        this.apiPrefixPool = uniq(this.apiPrefixPool.map(normalizePrefix));
         LOG('--→ 代理源追加: ' + add + '；总数=' + this.rawPrefixPool.length);
       }
     },
@@ -500,10 +598,10 @@
     prepare: function () {
       UI.indeterminate(true);
 
-      // 注意：version 不是必需文件，所以测试用 project.json（你仓库必有）
+      // 测试用 project.json（你仓库一定有；version 不一定有）
       var testRaw = originRaw('project.json');
 
-      // API 测试用仓库信息接口（不依赖 version 文件）
+      // API 测试用仓库信息接口（不依赖 version）
       var testApi = originApi('/repos/' + CONFIG.owner + '/' + CONFIG.repo);
 
       LOG('---→ 节点快筛（不拉梯子）');
@@ -520,7 +618,7 @@
       }
 
       if (this.bestApi === null) {
-        // 尝试复用 RAW 的前缀做 API
+        // 尝试复用 RAW 前缀
         this.bestApi = this.fastPick([this.bestRaw].concat(this.apiPrefixPool), testApi, 'API');
       }
 
@@ -528,6 +626,13 @@
 
       LOG('RAW 加速器最终选择：' + (this.bestRaw || '直连'));
       LOG('API 加速器最终选择：' + (this.bestApi === null ? '不可用（将走兜底模式）' : (this.bestApi || '直连')));
+
+      // 记住本次最快节点（下次放最前面）
+      ProxyCache.data = ProxyCache.data || {};
+      ProxyCache.data.bestRaw = this.bestRaw || '';
+      ProxyCache.data.bestApi = (this.bestApi === null ? '' : (this.bestApi || ''));
+      ProxyCache.save();
+
       return true;
     },
 
@@ -551,19 +656,53 @@
     }
   };
 
-  // ========================= ⑨ 仓库全文件清单（API Tree） =========================
+  // ========================= ⑫ 远端代理配置自动更新（解决“代理全失效怎么办”） =========================
+  function refreshProxyConfigFromRemote() {
+    // 只有当网络已经跑通（bestRaw 有值）才可能拿到远端配置
+    // 远端配置放在：仓库根目录/代理源.json
+    // 你可以随时在 GitHub 更新这个文件，手机下次运行会自动替换本地代理缓存。
+
+    LOG('>>>>→ 尝试拉取远端代理配置：' + REMOTE_PROXY_CONFIG + ' ←<<<<');
+
+    var rr = Net.rawGetString(REMOTE_PROXY_CONFIG);
+    if (!rr.ok || !rr.body) {
+      LOG('（跳过）远端代理配置不存在或读取失败');
+      return;
+    }
+
+    var j = safeJsonParse(rr.body);
+    if (!j || typeof j !== 'object') {
+      LOG('（跳过）远端代理配置不是 JSON');
+      return;
+    }
+
+    // 支持字段：seed_prefix / proxy_sources
+    var sp = j.seed_prefix || j.seedPrefix;
+    var ps = j.proxy_sources || j.proxySources;
+
+    if (sp && sp.length) {
+      ProxyCache.data = ProxyCache.data || {};
+      ProxyCache.data.seed_prefix = sp;
+    }
+    if (ps && ps.length) {
+      ProxyCache.data = ProxyCache.data || {};
+      ProxyCache.data.proxy_sources = ps;
+    }
+
+    ProxyCache.save();
+    LOG('✅ 已更新本地代理缓存（下次启动会自动使用最新列表）');
+  }
+
+  // ========================= ⑬ 仓库全文件清单（API Tree） =========================
   function getRepoFileListViaApiTree() {
-    // 1) refs -> commit sha
     var ref = Net.apiGetJson('/repos/' + CONFIG.owner + '/' + CONFIG.repo + '/git/refs/heads/' + CONFIG.branch);
     if (!ref || !ref.object || !ref.object.sha) return null;
     var commitSha = ref.object.sha;
 
-    // 2) commit -> tree sha
     var commit = Net.apiGetJson('/repos/' + CONFIG.owner + '/' + CONFIG.repo + '/git/commits/' + commitSha);
     if (!commit || !commit.tree || !commit.tree.sha) return null;
     var treeSha = commit.tree.sha;
 
-    // 3) tree recursive
     var tree = Net.apiGetJson('/repos/' + CONFIG.owner + '/' + CONFIG.repo + '/git/trees/' + treeSha + '?recursive=1');
     if (!tree || !tree.tree || !tree.tree.length) return null;
 
@@ -578,13 +717,10 @@
     return out;
   }
 
-  // ========================= ⑩ 兜底：version.updateFile =========================
-  function parseVersionFile(remoteVersionText) {
-    var s = String(remoteVersionText || '').trim();
-    var j = null;
-    if (s && (s[0] === '{' || s[0] === '[')) j = safeJsonParse(s);
+  // ========================= ⑭ 兜底：version.updateFile（可有可无） =========================
+  function parseVersion(remoteVersionText) {
+    var j = safeJsonParse(String(remoteVersionText || '').trim());
     if (!j) return { ok: false };
-
     var ver = j.version ? String(j.version) : '';
     var list = [];
     if (j.updateFile && j.updateFile.length) {
@@ -599,18 +735,15 @@
         list.push({ path: rp, local: lp, sha: '' });
       }
     }
-
     return { ok: true, version: ver, list: list };
   }
 
-  // ========================= ⑪ 自身热更新（防死循环） =========================
+  // ========================= ⑮ 自我更新（带“HTML拦截页识别”+ 防死循环） =========================
   function looksLikeJs(code) {
     code = String(code || '');
     if (code.length < 800) return false;
     if (/<html/i.test(code) || /<!doctype/i.test(code)) return false;
-    // 必须包含本脚本标识，避免代理返回“别的东西”导致误覆盖
     if (code.indexOf('【TB】一键更新程序.js') < 0) return false;
-    if (code.indexOf('GitHub API Tree') < 0 && code.indexOf('API Tree') < 0) return false;
     return true;
   }
 
@@ -625,7 +758,7 @@
   }
 
   function readSelfMarker() {
-    var p = files.join(CONFIG.installDir, 'tmp', '自更新标记.json');
+    var p = files.join(WORK_DIR, '自更新标记.json');
     try {
       if (!files.exists(p)) return null;
       return safeJsonParse(String(files.read(p)));
@@ -635,7 +768,7 @@
   }
 
   function writeSelfMarker(obj) {
-    var p = files.join(CONFIG.installDir, 'tmp', '自更新标记.json');
+    var p = files.join(WORK_DIR, '自更新标记.json');
     try {
       createDirsForFile(p);
       files.write(p, JSON.stringify(obj, null, 2));
@@ -652,7 +785,6 @@
       curName = engines.myEngine().getSourceFile().getName();
     } catch (e) {}
 
-    // 用当前运行文件名去拉远端（避免【tb】/【TB】错配）
     var selfName = curName || CONFIG.canonicalSelfName;
 
     var rr = Net.rawGetString(selfName);
@@ -678,7 +810,7 @@
       return;
     }
 
-    // 防死循环：如果 2 分钟内已经更新到同一个 remoteH，还在变，那就跳过
+    // 防死循环：2 分钟内如果已经更新到同一个 remoteH，就别再重启
     var mk = readSelfMarker();
     if (mk && mk.remoteHash === remoteH && mk.time && (new Date().getTime() - mk.time) < 120000) {
       LOG('⚠️ 检测到可能的循环自更新，已跳过（避免反复重启）');
@@ -690,9 +822,7 @@
     var targetPath = files.join(CONFIG.installDir, CONFIG.canonicalSelfName);
     try {
       files.write(targetPath, remoteCode);
-      if (curPath && curPath !== targetPath) {
-        files.write(curPath, remoteCode);
-      }
+      if (curPath && curPath !== targetPath) files.write(curPath, remoteCode);
       writeSelfMarker({ remoteHash: remoteH, time: new Date().getTime() });
     } catch (e3) {
       LOG('❌ 写入更新器失败：' + e3);
@@ -706,11 +836,9 @@
     exit();
   }
 
-  // ========================= ⑫ 下载执行（并发 + 差分） =========================
-  // forceAll：仅在“兜底模式且版本号变了”时为 true
+  // ========================= ⑯ 下载（并发 + sha 差分） =========================
   function downloadAll(filesList, forceAll) {
     forceAll = !!forceAll;
-
     var total = filesList.length;
     var needList = [];
 
@@ -719,18 +847,10 @@
       var rp = item.path;
       var lp = item.local || rp;
       var sha = item.sha || '';
-
       var localAbs = files.join(CONFIG.installDir, lp);
 
-      // 需要更新的判定：
-      // 1) 强制更新（forceUpdate） => 一定下
-      // 2) 兜底模式版本变了（forceAll） => 一定下
-      // 3) 本地不存在 => 一定下
-      // 4) 有 sha => sha 变了才下
       var need = CONFIG.forceUpdate || forceAll || (!files.exists(localAbs));
-      if (!need && sha) {
-        need = (Cache.map[rp] !== sha);
-      }
+      if (!need && sha) need = (Cache.map[rp] !== sha);
 
       if (need) needList.push({ remote: rp, local: lp, sha: sha });
     }
@@ -745,7 +865,6 @@
     var done = new AtomicInteger(0);
     var okCount = new AtomicInteger(0);
     var latch = new CountDownLatch(needList.length);
-
     var pool = Executors.newFixedThreadPool(CONFIG.maxParallel);
 
     for (var j = 0; j < needList.length; j++) {
@@ -758,7 +877,6 @@
                 okCount.incrementAndGet();
                 if (task.sha) Cache.map[task.remote] = task.sha;
               }
-
               var cur = done.incrementAndGet();
               UI.setProgress(cur, needList.length);
               LOG((ok ? '✅ ' : '❌ ') + task.remote);
@@ -782,16 +900,10 @@
     return (success === needList.length);
   }
 
-  // ========================= ⑬ 主流程 =========================
+  // ========================= ⑰ 主流程 =========================
   function main() {
     LOG('启动更新器');
     LOG('项目目录：' + CONFIG.installDir);
-
-    // 确保 tmp 目录存在
-    try {
-      files.createWithDirs(files.join(CONFIG.installDir, 'tmp', 'x'));
-      files.remove(files.join(CONFIG.installDir, 'tmp', 'x'));
-    } catch (e0) {}
 
     Cache.load();
 
@@ -803,27 +915,25 @@
       exit();
     }
 
-    // 自身热更新（修复：防死循环）
+    // 网络已通：尝试更新“远端代理配置”（用于未来运行更稳）
+    refreshProxyConfigFromRemote();
+
+    // 自身热更新
     selfHotUpdateIfNeeded();
 
-    // 获取远端 version（备用 + 兜底版本号判断）
-    var vr = Net.rawGetString('version');
+    // 读取远端 version（仅用于兜底）
     var verInfo = null;
+    var vr = Net.rawGetString('version');
     if (vr.ok && vr.body) {
-      verInfo = parseVersionFile(vr.body);
-      if (verInfo.ok) {
-        LOG('远端 version 读取成功，version=' + (verInfo.version || '(空)') + '，updateFile=' + verInfo.list.length);
-      } else {
-        LOG('远端 version 存在但不是 JSON（将仅用于“存在性”判断）');
-      }
-    } else {
-      LOG('远端 version 不存在或读取失败（不影响全仓库模式）');
+      verInfo = parseVersion(vr.body);
+      if (verInfo.ok) LOG('远端 version 读取成功，version=' + (verInfo.version || '(空)') + '，updateFile=' + verInfo.list.length);
     }
 
-    // 优先：API Tree 拉全仓库
+    // 1) 优先：API Tree 全仓库
     LOG('>>>>→ 获取仓库文件清单 ←<<<<');
-    var list = null;
+
     var mode = '';
+    var list = null;
 
     if (Net.bestApi !== null) {
       list = getRepoFileListViaApiTree();
@@ -833,14 +943,14 @@
       }
     }
 
-    // 兜底：version.updateFile
+    // 2) 兜底：version.updateFile
     var forceAllFallback = false;
     if (!list || !list.length) {
       mode = 'versionFallback';
       if (verInfo && verInfo.ok && verInfo.list.length) {
         list = verInfo.list;
 
-        // 兜底模式：如果远端 version 号变了 => 强制更新列表文件
+        // 小白友好规则：兜底模式只看 version 字符串是否变化。
         var remoteVer = verInfo.version || '';
         var localVer = Cache.map._fallbackVersion || '';
         if (remoteVer && remoteVer !== localVer) {
@@ -861,9 +971,7 @@
     } else {
       // 统一结构
       var tmp2 = [];
-      for (var i = 0; i < list.length; i++) {
-        tmp2.push({ path: list[i].path, local: list[i].path, sha: list[i].sha });
-      }
+      for (var i = 0; i < list.length; i++) tmp2.push({ path: list[i].path, local: list[i].path, sha: list[i].sha });
       list = tmp2;
     }
 
@@ -882,7 +990,7 @@
       try { toast('更新完成（有失败项）'); } catch (e5) {}
     }
 
-    sleepSafe(1200);
+    sleepSafe(1000);
     UI.close();
     exit();
   }
@@ -896,3 +1004,24 @@
     UI.close();
   }
 })();
+
+// ========================= 远端代理配置文件：代理源.json（可选） =========================
+// 你把下面内容存成一个文件，放到 GitHub 仓库根目录，文件名：代理源.json
+// 以后如果你发现某些代理挂了，只要改这个文件并提交到 GitHub，手机端下次更新会自动拉取并替换。
+//
+// {
+//   "seed_prefix": [
+//     "",
+//     "http://gh.927223.xyz/",
+//     "https://ghproxy.net/",
+//     "https://mirror.ghproxy.com/",
+//     "https://gh-proxy.com/",
+//     "https://ghproxy.vip/",
+//     "https://ghproxy.site/"
+//   ],
+//   "proxy_sources": [
+//     "https://api.akams.cn/github",
+//     "https://git.mxg.pub/api/github/list",
+//     "https://yishijie.gitlab.io/ziyuan/gh.txt"
+//   ]
+// }
