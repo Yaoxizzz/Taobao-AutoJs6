@@ -5,24 +5,44 @@ var 工具 = require('./TB_工具');
 var 弹窗 = require('./TB_弹窗处理');
 
 function _确保无障碍() {
-  try {
-    auto.waitFor();
-    return true;
-  } catch (e) {
-    // 某些机型/权限状态下会异常，这里不强杀。
-    return false;
-  }
+try {
+auto.waitFor();
+return true;
+} catch (e) {
+工具.logw('无障碍可能未开启（auto.waitFor 异常）：' + e);
+return false;
+}
 }
 
 function _回退到淘宝首页(maxBack) {
-  maxBack = maxBack || 配置.重试.回退;
-  for (var i = 0; i < maxBack; i++) {
-    弹窗.处理全部弹窗();
+maxBack = maxBack || 配置.重试.回退;
+工具.logi('回退到首页：最多 back ' + maxBack + ' 次');
 
-    // 识别到首页入口任意一个，认为到首页了
-    if (desc(配置.首页入口.领淘金币.desc).exists() || desc(配置.首页入口['88VIP'].desc).exists() || desc(配置.首页入口.红包签到.desc).exists()) {
-      return true;
-    }
+
+for (var i = 0; i < maxBack; i++) {
+if (弹窗.处理全部弹窗()) {
+工具.logi('回退到首页：已处理弹窗（继续检查是否到首页）');
+工具.sleepRand(350, 200);
+}
+
+
+if (desc(配置.首页入口.领淘金币.desc).exists()
+|| desc(配置.首页入口['88VIP'].desc).exists()
+|| desc(配置.首页入口.红包签到.desc).exists()) {
+工具.logi('✅ 已识别到淘宝首页');
+return true;
+}
+
+
+工具.logi('回退一次(' + (i + 1) + '/' + maxBack + ')');
+back();
+工具.sleepRand(700, 300);
+}
+
+
+工具.logw('❌ 回退到首页失败：可能被活动页/广告页卡住，或首页入口文案/desc 已变化');
+return false;
+}
 
     back();
     工具.sleepRand(700, 300);
@@ -31,37 +51,57 @@ function _回退到淘宝首页(maxBack) {
 }
 
 function _确保在首页() {
-  // 如果不在淘宝，启动
-  if (currentPackage() !== 配置.包名) {
-    工具.launchTaobao();
-  }
+var pkg = currentPackage();
+工具.logi('确保在首页：当前包名=' + pkg);
 
-  // 尝试回退到首页
-  if (_回退到淘宝首页(3)) return true;
 
-  // 最后一招：点“首页”tab（不同版本可能是 text/desc）
-  if (工具.clickByDesc('首页', 800, '底部tab-首页') || 工具.clickByText('首页', 800, '底部tab-首页')) {
-    工具.sleepRand(900, 400);
-  }
+if (pkg !== 配置.包名) {
+工具.logw('当前不在淘宝（将尝试启动淘宝）');
+工具.launchTaobao();
+工具.sleepRand(900, 400);
+}
+
+
+if (_回退到淘宝首页(3)) return true;
+
+
+工具.logw('回退失败：尝试点击底部「首页」Tab');
+if (工具.clickByDesc('首页', 800, '底部tab-首页') || 工具.clickByText('首页', 800, '底部tab-首页')) {
+工具.sleepRand(900, 400);
+}
+
+
+return _回退到淘宝首页(3);
+}
 
   return _回退到淘宝首页(3);
 }
 
 function _稳态等待(checkFn, timeoutMs, reason) {
-  var t0 = 工具.now();
-  var to = timeoutMs || 配置.超时.找控件;
-  while (工具.now() - t0 < to) {
-    if (弹窗.处理全部弹窗()) {
-      工具.sleepRand(400, 200);
-      continue;
-    }
-    try {
-      if (checkFn()) return true;
-    } catch (e) {}
-    sleep(250);
-  }
-  工具.logw('等待超时: ' + (reason || ''));
-  return false;
+var t0 = 工具.now();
+var to = timeoutMs || 配置.超时.找控件;
+
+
+工具.logi('等待：' + (reason || '') + '（超时=' + to + 'ms）');
+
+
+while (工具.now() - t0 < to) {
+if (弹窗.处理全部弹窗()) {
+工具.sleepRand(400, 200);
+continue;
+}
+try {
+if (checkFn()) {
+工具.logi('✅ 等待完成：' + (reason || '') + '（用时=' + (工具.now() - t0) + 'ms）');
+return true;
+}
+} catch (e) {}
+sleep(250);
+}
+
+
+工具.logw('等待超时: ' + (reason || '') + '（用时=' + (工具.now() - t0) + 'ms）');
+return false;
 }
 
 function 签到_领淘金币() {
@@ -250,4 +290,5 @@ module.exports = {
   签到_领淘金币: 签到_领淘金币,
   签到_88VIP: 签到_88VIP,
   签到_红包签到: 签到_红包签到
+
 };
