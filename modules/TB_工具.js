@@ -277,6 +277,8 @@ module.exports = {
   launchTaobao: launchTaobao,
   forceStopTaobao: forceStopTaobao,
   requestScreenIfNeeded: requestScreenIfNeeded,
+  关闭悬浮日志: 关闭悬浮日志,
   findImageSafe: findImageSafe
 
 };
+
