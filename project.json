@@ -1,0 +1,10 @@
+{
+"name": "淘宝自动签到工程",
+"main": "main.js",
+"version": "1.0.0",
+"description": "AutoJs6 淘宝自动签到（领淘金币/88VIP/红包签到）",
+"author": "Auto.js 全栈架构师",
+"engines": {
+"rhino": true
+}
+}
