@@ -5,6 +5,7 @@
     "main.js",
     "modules/TB_工具.js",
     "modules/TB_弹窗处理.js",
+    "modules/TB_悬浮日志.js",
     "modules/TB_淘宝签到.js",
     "modules/TB_配置.js",
     "modules/TB_酷炫控制台.js",
