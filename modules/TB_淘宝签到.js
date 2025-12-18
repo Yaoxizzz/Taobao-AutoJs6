@@ -1,18 +1,30 @@
 // modules/TB_淘宝签到.js
 // =============================================================================
 // 【TB】淘宝自动签到 - 主线模块（AutoJs6 / Rhino / ES5）
+// =============================================================================
+// 你这次报错：
+//   未结束的字符串字面量 (TB_淘宝签到.js#112)
 //
-// 你提供的最新日志里：
-// ✅ 领淘金币：已能点到“点击签到”
-// ✅ 88VIP：已能点到“去签到”，但你强调“不需要处理每日签到页”，只要回到会员中心确认变成“明日领”即可
-// ❌ 红包签到：被“继续领钱”弹出的列表影响，导致无法进入“连续打卡”页面
+// 这类错误 99% 是因为：
+//   复制粘贴过程中，某一行字符串的引号没闭合（少了 ' 或 ")
+//   或者包含了特殊引号字符导致 Rhino 解析异常。
 //
-// 本次修改点（只改这个文件）：
-// [Fix] 淘金币：识别“赚更多金币”=已签到，不再误触任务列表
-// [Fix] 88VIP：点击“去签到”后只做“回退+验签(明日领)”，不再找“每日签到”图片
-// [Fix] 红包签到：识别“继续领钱/继续领取”=已签到，不再点击它；先关掉可能遮挡的任务列表，再进连续打卡
-// [Enhance] 红包连续打卡：加入“多次尝试 + 轻量滑动 + 更长等待 + 失败回退”防抖
-// [Enhance] 去重日志：避免你看到 force-stop/启动淘宝重复两次的困惑
+// 为了彻底避免：
+//   1) 我把本文件里所有字符串都改成【纯 ASCII 引号】(只用 ' 和 ")
+//   2) 删除可能引发复制异常的“花体引号/特殊符号”
+//   3) 你只需要【整文件覆盖】(不要分段替换)
+//
+// 业务逻辑（按你最新说明修正）：
+//   - 淘金币：看到「赚更多金币」= 已签到，绝对不点它（会弹任务列表，下阶段做）
+//   - 88VIP：点「去签到」后会跳走，但不处理跳转页；回到会员中心看到「明日领」即可
+//   - 红包签到：
+//       第1次：看到「继续领钱/继续领取」= 已完成（不点它，避免弹列表遮挡）
+//       第2次：进入「连续打卡」页再点「点击签到」
+//
+// 额外加固（不改其它文件，仅在本文件内做）：
+//   - 防误跳转：如果被广告误触跳到其它 App，会尝试 back 拉回淘宝
+//   - 防弹窗遮挡：每次等待/关键步骤都会先跑一次 弹窗.处理全部弹窗()
+//   - 防“帕金森横跳”：连续打卡入口只做轻量滑动(最多 2 次)，不会疯狂滑
 // =============================================================================
 
 'use strict';
@@ -21,17 +33,21 @@ var 配置 = require('./TB_配置');
 var 工具 = require('./TB_工具');
 var 弹窗 = require('./TB_弹窗处理');
 
-// ========================= 0) 悬浮日志（不挡点击） =========================
+// =============================================================================
+// 0) 触摸穿透悬浮日志（不挡点击）
+// =============================================================================
 // 说明：
-// - 你要求“悬浮窗在前台显示，但不能遮挡点击”
-// - 这里用 floaty.rawWindow + setTouchable(false) 实现【触摸穿透】
-// - 即使悬浮窗没权限/创建失败，也不会影响脚本运行（只是不显示悬浮日志）
+// - 你要求“前台能看到日志，但不能遮挡点击”。
+// - floaty.rawWindow + setTouchable(false) = 触摸穿透
+// - 如果没开悬浮窗权限：脚本照跑，只是悬浮日志不显示
 var 浮窗日志 = (function () {
   var win = null;
   var inited = false;
-  var enabled = true; // 你不想要悬浮窗的话：这里改成 false
+  var enabled = true; // 不想要悬浮日志：改成 false
   var lines = [];
   var maxLines = 12;
+
+  function _safe(fn) { try { return fn(); } catch (e) { return null; } }
 
   function _timeStr() {
     var d = new Date();
@@ -41,21 +57,19 @@ var 浮窗日志 = (function () {
     return hh + ':' + mm + ':' + ss;
   }
 
-  function _safe(fn) { try { return fn(); } catch (e) { return null; } }
-
-  function _hasFloatyPermission() {
+  function _hasPermission() {
     if (typeof floaty === 'undefined') return false;
     if (typeof floaty.hasPermission === 'function') return floaty.hasPermission();
-    return true; // 老版本交给创建时 try/catch
+    return true; // 老版本没有 hasPermission：交给创建时 try/catch
   }
 
-  function _requestFloatyPermission() {
+  function _requestPermission() {
     if (typeof floaty === 'undefined') return;
     if (typeof floaty.requestPermission === 'function') {
-      toast('请先开启 AutoJs6 悬浮窗权限，然后重新运行脚本');
+      toast('请开启 AutoJs6 悬浮窗权限后重新运行');
       floaty.requestPermission();
     } else {
-      toast('请在系统设置中手动开启 AutoJs6 悬浮窗权限');
+      toast('请到系统设置里手动开启 AutoJs6 悬浮窗权限');
     }
   }
 
@@ -65,9 +79,9 @@ var 浮窗日志 = (function () {
 
     if (!enabled) return false;
 
-    if (!_hasFloatyPermission()) {
-      console.warn('[TB] 悬浮窗权限未开启：悬浮日志不显示（不影响脚本运行）');
-      _requestFloatyPermission();
+    if (!_hasPermission()) {
+      console.warn('[TB] floaty permission not granted, skip float log');
+      _requestPermission();
       return false;
     }
 
@@ -75,25 +89,25 @@ var 浮窗日志 = (function () {
       win = floaty.rawWindow(
         <frame bg="#00000000">
           <vertical padding="10" bg="#AA000000">
-            <text text="TB 运行日志" textColor="#FFD700" textSize="12sp" textStyle="bold"/>
-            <text id="txt" text="启动..." textColor="#FFFFFF" textSize="10sp" maxLines="20"/>
+            <text text="TB LOG" textColor="#FFD700" textSize="12sp" textStyle="bold"/>
+            <text id="txt" text="starting..." textColor="#FFFFFF" textSize="10sp" maxLines="20"/>
           </vertical>
         </frame>
       );
 
-      // 放左上角，尽量不挡操作区
+      // 放左上角，尽量不挡操作区域
       var x = parseInt(device.width * 0.03, 10);
       var y = parseInt(device.height * 0.12, 10);
       win.setPosition(x, y);
 
-      // ✅ 关键：不挡点击（触摸穿透）
+      // 关键：不挡点击
       if (typeof win.setTouchable === 'function') win.setTouchable(false);
 
       lines = [];
-      _write('I', '悬浮日志启动（不挡点击）');
+      _write('I', 'float log ready');
       return true;
     } catch (e) {
-      console.warn('[TB] 悬浮日志创建失败：' + e);
+      console.warn('[TB] floaty create failed: ' + e);
       win = null;
       return false;
     }
@@ -129,9 +143,9 @@ var 浮窗日志 = (function () {
   return { i: i, w: w, e: e, close: close };
 })();
 
-// ========================= 1) 统一日志输出 =========================
-// 说明：
-// - 不写 log 文件：只输出到 AutoJs6 日志面板 + 悬浮日志
+// =============================================================================
+// 1) 日志：同时输出到 AutoJs6 日志面板 + 悬浮窗
+// =============================================================================
 function logI(msg) {
   console.log('[TB] ' + msg);
   浮窗日志.i(msg);
@@ -147,33 +161,59 @@ function logE(msg) {
   浮窗日志.e(msg);
 }
 
-// ========================= 2) 通用小工具 =========================
+// =============================================================================
+// 2) 小工具
+// =============================================================================
 function now() { return new Date().getTime(); }
-
 function safeSleep(ms) { try { sleep(ms); } catch (e) {} }
 
 function safeBack(reason) {
-  logI('返回: ' + (reason || ''));
+  logI('back: ' + (reason || ''));
   try { back(); } catch (e) {}
   safeSleep(700);
 }
 
-function textExistsExact(t) {
-  try { return text(String(t)).exists(); } catch (e) { return false; }
+function textHas(s) {
+  try { return textContains(String(s)).exists(); } catch (e) { return false; }
 }
 
-function textExistsContains(t) {
-  try { return textContains(String(t)).exists(); } catch (e) { return false; }
+function pkgIsTaobao() {
+  try { return currentPackage() === 配置.包名; } catch (e) { return false; }
 }
 
+// 防误跳转：如果跳到其它 app，尽量 back 回淘宝
+function ensureTaobaoPackage(tag) {
+  tag = tag || '';
+  try {
+    var p = currentPackage();
+    if (!p) return true;
+    if (p === 配置.包名) return true;
+
+    // 有时候淘宝内部打开的是 webview/系统授权页，允许短暂存在
+    if (p.indexOf('permission') >= 0 || p.indexOf('packageinstaller') >= 0) return true;
+
+    logW('not taobao pkg (' + p + '), try back: ' + tag);
+    safeBack('return taobao');
+
+    // 再检查一次
+    return pkgIsTaobao();
+  } catch (e) {
+    return true;
+  }
+}
+
+// 等待某个条件出现，同时持续处理弹窗，避免遮挡
 function waitForCondition(checkFn, timeoutMs, reason) {
   var t0 = now();
-  var to = timeoutMs || (配置.超时 && 配置.超时.找控件) || 15000;
+  var to = timeoutMs || 15000;
 
-  logI('等待: ' + (reason || '') + ' (超时=' + to + 'ms)');
+  logI('wait: ' + (reason || '') + ', timeout=' + to + 'ms');
 
   while (now() - t0 < to) {
-    // 先处理弹窗（防遮挡）
+    // 防误跳转
+    ensureTaobaoPackage('wait');
+
+    // 先处理弹窗
     try {
       if (弹窗 && 弹窗.处理全部弹窗 && 弹窗.处理全部弹窗()) {
         safeSleep(350);
@@ -184,7 +224,7 @@ function waitForCondition(checkFn, timeoutMs, reason) {
     // 再检查条件
     try {
       if (checkFn()) {
-        logI('✅ 等待完成: ' + (reason || '') + ' (用时=' + (now() - t0) + 'ms)');
+        logI('wait ok: ' + (reason || '') + ', cost=' + (now() - t0) + 'ms');
         return true;
       }
     } catch (e1) {}
@@ -192,51 +232,54 @@ function waitForCondition(checkFn, timeoutMs, reason) {
     safeSleep(250);
   }
 
-  logW('⏰ 等待超时: ' + (reason || '') + ' (用时=' + (now() - t0) + 'ms)');
+  logW('wait timeout: ' + (reason || '') + ', cost=' + (now() - t0) + 'ms');
   return false;
 }
 
-// 找图点击：支持给多个图片路径（会按顺序尝试）
+// 找图点击：支持多张图路径按顺序尝试
 function clickByAnyImage(imagePaths, threshold, reason) {
   threshold = threshold || 0.82;
 
-  // 找图必须截图权限
-  if (工具 && 工具.requestScreenIfNeeded) {
-    var okCap = 工具.requestScreenIfNeeded();
-    if (!okCap) {
-      logW('截图权限申请失败：找图不可用 -> ' + (reason || ''));
-      return false;
+  // 找图必须有截图权限
+  try {
+    if (工具 && 工具.requestScreenIfNeeded) {
+      if (!工具.requestScreenIfNeeded()) {
+        logW('no screen capture permission, skip image: ' + (reason || ''));
+        return false;
+      }
     }
-  }
+  } catch (e0) {}
 
   if (!imagePaths || !imagePaths.length) return false;
 
   for (var i = 0; i < imagePaths.length; i++) {
     var pth = String(imagePaths[i]);
-    try { if (!files.exists(pth)) continue; } catch (e0) {}
+
+    // 路径不存在就跳过
+    try { if (!files.exists(pth)) continue; } catch (e1) {}
 
     var p = null;
-    try { p = 工具.findImageSafe(pth, threshold); } catch (e1) { p = null; }
+    try { p = 工具.findImageSafe(pth, threshold); } catch (e2) { p = null; }
 
     if (p) {
-      logI('✅ 找图命中: ' + (reason || '') + ' -> ' + pth + ' @(' + p.x + ',' + p.y + ')');
+      logI('img hit: ' + (reason || '') + ' => ' + pth + ' @' + p.x + ',' + p.y);
       try { 工具.smartClick(p.x + 5, p.y + 5); }
-      catch (e2) { try { press(p.x + 5, p.y + 5, 80); } catch (e3) {} }
+      catch (e3) { try { press(p.x + 5, p.y + 5, 80); } catch (e4) {} }
       safeSleep(900);
       return true;
     }
   }
 
-  logW('❌ 找图未命中: ' + (reason || '') + '（已尝试 ' + imagePaths.length + ' 张图）');
+  logW('img miss: ' + (reason || '') + ', tried=' + imagePaths.length);
   return false;
 }
 
-// 轻量滑动：用于把“连续打卡”入口滑出来（避免你说的“控件识别不到就疯狂滑动”）
+// 轻量上滑一次（只用于把入口滑出来；最多调用 2 次）
 function gentleSwipeUpOnce() {
   try {
     var x = parseInt(device.width * 0.5, 10);
     var y1 = parseInt(device.height * 0.72, 10);
-    var y2 = parseInt(device.height * 0.50, 10);
+    var y2 = parseInt(device.height * 0.52, 10);
     swipe(x, y1, x, y2, 380);
     safeSleep(700);
     return true;
@@ -245,14 +288,49 @@ function gentleSwipeUpOnce() {
   }
 }
 
-// ========================= 3) 前置：无障碍、启动淘宝、回到首页 =========================
+// 尝试收起底部任务面板/遮挡层（点空白 + back）
+function dismissPossibleSheet(tag) {
+  tag = tag || 'sheet';
+
+  // 先走统一弹窗处理
+  try {
+    if (弹窗 && 弹窗.处理全部弹窗 && 弹窗.处理全部弹窗()) {
+      logI(tag + ': popup handled');
+      safeSleep(400);
+      return true;
+    }
+  } catch (e0) {}
+
+  // 点上方空白
+  try {
+    var x = parseInt(device.width * 0.5, 10);
+    var y = parseInt(device.height * 0.18, 10);
+    press(x, y, 60);
+    safeSleep(500);
+    logI(tag + ': tap blank');
+  } catch (e1) {}
+
+  // back 一次
+  try {
+    back();
+    safeSleep(650);
+    logI(tag + ': back once');
+    return true;
+  } catch (e2) {
+    return false;
+  }
+}
+
+// =============================================================================
+// 3) 前置：无障碍、启动淘宝、回到首页
+// =============================================================================
 function ensureAccessibility() {
   try {
     auto.waitFor();
-    logI('无障碍: ✅ 已开启');
+    logI('acc: enabled');
     return true;
   } catch (e) {
-    logW('无障碍: ❌ 可能未开启（系统设置->无障碍->AutoJs6 开启）');
+    logW('acc: maybe disabled');
     return false;
   }
 }
@@ -262,7 +340,7 @@ function ensureTaobaoForeground() {
   try { pkg = currentPackage(); } catch (e) {}
 
   if (pkg !== 配置.包名) {
-    logI('准备启动淘宝（如果你看到两条“启动淘宝”，说明工具模块也在打日志，这是正常的）');
+    logI('launch taobao');
     try { 工具.launchTaobao(); }
     catch (e2) { try { app.launchPackage(配置.包名); } catch (e3) {} }
     safeSleep(1500);
@@ -272,24 +350,27 @@ function ensureTaobaoForeground() {
 
 function backToHome(maxBack) {
   maxBack = maxBack || 4;
-  logI('回到淘宝首页：最多 back ' + maxBack + ' 次');
+  logI('back to home, max=' + maxBack);
 
   for (var i = 0; i < maxBack; i++) {
+    ensureTaobaoPackage('home');
+
     try { if (弹窗.处理全部弹窗()) safeSleep(300); } catch (e0) {}
 
+    // 识别到首页入口任意一个就算到首页
     try {
       if (desc(配置.首页入口.领淘金币.desc).exists()
         || desc(配置.首页入口['88VIP'].desc).exists()
         || desc(配置.首页入口.红包签到.desc).exists()) {
-        logI('✅ 已识别到淘宝首页');
+        logI('home ok');
         return true;
       }
     } catch (e1) {}
 
-    safeBack('回首页(' + (i + 1) + '/' + maxBack + ')');
+    safeBack('home(' + (i + 1) + '/' + maxBack + ')');
   }
 
-  logW('❌ 回到首页失败：可能在活动页/广告页/直播页');
+  logW('home failed');
   return false;
 }
 
@@ -297,9 +378,10 @@ function ensureHome() {
   ensureTaobaoForeground();
   if (backToHome(4)) return true;
 
-  logW('尝试点击底部「首页」Tab 兜底');
+  // 兜底：点底部首页 Tab
+  logW('try click bottom home tab');
   try {
-    if (工具.clickByDesc('首页', 800, '底部tab-首页') || 工具.clickByText('首页', 800, '底部tab-首页')) {
+    if (工具.clickByDesc('首页', 800, 'tab-home') || 工具.clickByText('首页', 800, 'tab-home')) {
       safeSleep(1200);
     }
   } catch (e0) {}
@@ -307,67 +389,67 @@ function ensureHome() {
   return backToHome(4);
 }
 
-// ========================= 4) 领淘金币签到 =========================
+// =============================================================================
+// 4) 领淘金币签到
+// =============================================================================
 function flowCoinSign() {
-  logI('=== 流程：领淘金币签到 ===');
+  logI('FLOW: coin');
 
   if (!ensureHome()) {
-    logW('领淘金币：回首页失败 -> 跳过');
+    logW('coin: skip, not home');
     return false;
   }
 
   // 点击首页入口：领淘金币
   var ok = false;
   try {
-    ok = 工具.clickByDescInArea(配置.首页入口.领淘金币.desc, 配置.首页入口.领淘金币.区域, 1200, '首页-领淘金币');
-    if (!ok) ok = 工具.clickByDesc(配置.首页入口.领淘金币.desc, 800, '首页-领淘金币(全局)');
-    if (!ok) ok = 工具.clickRatio(配置.首页入口.领淘金币.兜底点, '首页-领淘金币(兜底比例点)');
+    ok = 工具.clickByDescInArea(配置.首页入口.领淘金币.desc, 配置.首页入口.领淘金币.区域, 1200, 'home-coin');
+    if (!ok) ok = 工具.clickByDesc(配置.首页入口.领淘金币.desc, 800, 'home-coin-all');
+    if (!ok) ok = 工具.clickRatio(配置.首页入口.领淘金币.兜底点, 'home-coin-ratio');
   } catch (e1) { ok = false; }
 
   if (!ok) {
-    logW('领淘金币入口：点击失败（可能入口文案/desc 变了，或首页没加载完）');
+    logW('coin entry click failed');
     return false;
   }
 
   safeSleep(1200);
 
-  // [Fix] 你强调：签到后“点击签到”会变成“赚更多金币”，点击它会弹任务列表（下一阶段再做）
-  // 所以：
-  // - 如果页面已经出现“赚更多金币”，我们认为“当前已签到”，直接回退，不点它。
-  if (textExistsExact('赚更多金币') || textExistsContains('赚更多金币')) {
-    logI('淘金币：检测到【赚更多金币】= 已签到（不点击，避免弹出任务列表）');
-    safeBack('淘金币已签到回首页');
+  // 你新增的素材路径（作为额外兜底）
+  var imgEarnMore = '淘宝素材/淘宝_领淘金币页面_赚更多金币/crop.png';
+
+  // [Fix] 如果出现“赚更多金币”= 已签到，绝对不点它
+  if (textHas('赚更多金币')) {
+    logI('coin signed: earn more (do not click)');
+    safeBack('coin signed');
     return true;
   }
 
-  // 等待并点击“点击签到”（控件优先，找图兜底）
-  var stepReady = waitForCondition(function () {
+  // 等待“点击签到”出现，或直接出现“赚更多金币”
+  var ready = waitForCondition(function () {
+    if (textHas(配置.领淘金币页.点击签到.text)) return true;
+    if (textHas('赚更多金币')) return true;
+
+    // 额外：找图命中也算 ready
     try {
-      if (textContains(配置.领淘金币页.点击签到.text).exists()) return true;
-      if (descContains(配置.领淘金币页.点击签到.text).exists()) return true;
+      if (工具.requestScreenIfNeeded()) {
+        if (工具.findImageSafe(配置.领淘金币页.点击签到.找图, 0.82)) return true;
+        if (工具.findImageSafe(imgEarnMore, 0.82)) return true;
+      }
     } catch (e0) {}
 
-    // 找图也算准备好
-    try {
-      if (工具.requestScreenIfNeeded() && 工具.findImageSafe(配置.领淘金币页.点击签到.找图, 0.82)) return true;
-    } catch (e1) {}
-
-    // 兜底：如果突然变成“赚更多金币”，也算已完成
-    if (textExistsContains('赚更多金币')) return true;
-
     return false;
-  }, 20000, '领淘金币页加载');
+  }, 22000, 'coin page');
 
-  if (!stepReady) {
-    logW('领淘金币页：加载超时 -> 回退');
-    safeBack('领淘金币页超时回退');
+  if (!ready) {
+    logW('coin page timeout');
+    safeBack('coin timeout');
     return false;
   }
 
-  // 如果等到的是“赚更多金币”，直接认为已签到
-  if (textExistsContains('赚更多金币')) {
-    logI('淘金币：页面出现【赚更多金币】= 已签到（不点击）');
-    safeBack('淘金币已签到回首页');
+  if (textHas('赚更多金币')) {
+    logI('coin signed after wait: earn more');
+    safeBack('coin signed');
     return true;
   }
 
@@ -376,90 +458,102 @@ function flowCoinSign() {
   try {
     var btn = textContains(配置.领淘金币页.点击签到.text).findOne(1200);
     if (!btn) btn = descContains(配置.领淘金币页.点击签到.text).findOne(1200);
-    if (btn) clicked = 工具.clickUiObject(btn, '淘金币-点击签到(控件)');
+    if (btn) clicked = 工具.clickUiObject(btn, 'coin-sign-btn');
   } catch (e2) {}
 
-  if (!clicked) clicked = clickByAnyImage([配置.领淘金币页.点击签到.找图], 0.82, '淘金币-点击签到(找图)');
-
+  if (!clicked) clicked = clickByAnyImage([配置.领淘金币页.点击签到.找图], 0.82, 'coin-sign-img');
   if (!clicked) {
-    try { clicked = 工具.clickRatio(配置.领淘金币页.点击签到.兜底点, '淘金币-点击签到(兜底比例点)'); }
-    catch (e3) {}
+    try { clicked = 工具.clickRatio(配置.领淘金币页.点击签到.兜底点, 'coin-sign-ratio'); } catch (e3) {}
   }
 
   if (!clicked) {
-    logW('淘金币：❌ 没找到“点击签到”（可能已签到/文案变化/布局变化）');
-    safeBack('淘金币失败回退');
+    logW('coin sign click failed');
+    safeBack('coin fail');
     return false;
   }
 
-  logI('淘金币：✅ 已点击签到（等待按钮变化确认）');
+  logI('coin sign clicked, verify');
 
-  // [Enhance] 等待它变成“赚更多金币”（不点它）
+  // 等待变成“赚更多金币”或出现“已签到”
   waitForCondition(function () {
-    return textExistsContains('赚更多金币') || textExistsContains('今日已签到') || textExistsContains('已签到');
-  }, 10000, '淘金币验签（赚更多金币/已签到）');
+    if (textHas('赚更多金币')) return true;
+    if (textHas('已签到')) return true;
+    if (textHas('今日已签到')) return true;
 
-  safeBack('淘金币流程结束回首页');
+    // 额外：图片验签
+    try {
+      if (工具.requestScreenIfNeeded()) {
+        if (工具.findImageSafe(imgEarnMore, 0.82)) return true;
+      }
+    } catch (e0) {}
+
+    return false;
+  }, 12000, 'coin verify');
+
+  safeBack('coin done');
   return true;
 }
 
-// ========================= 5) 88VIP 去签到 =========================
+// =============================================================================
+// 5) 88VIP 去签到
+// =============================================================================
 function flowVipSign() {
-  logI('=== 流程：88VIP 去签到 ===');
+  logI('FLOW: 88vip');
 
   if (!ensureHome()) {
-    logW('88VIP：回首页失败 -> 跳过');
+    logW('vip: skip, not home');
     return false;
   }
 
   // 点击首页入口：88VIP
   var ok = false;
   try {
-    ok = 工具.clickByDescInArea(配置.首页入口['88VIP'].desc, 配置.首页入口['88VIP'].区域, 1200, '首页-88VIP');
-    if (!ok) ok = 工具.clickByDesc(配置.首页入口['88VIP'].desc, 800, '首页-88VIP(全局)');
-    if (!ok) ok = 工具.clickRatio(配置.首页入口['88VIP'].兜底点, '首页-88VIP(兜底比例点)');
+    ok = 工具.clickByDescInArea(配置.首页入口['88VIP'].desc, 配置.首页入口['88VIP'].区域, 1200, 'home-vip');
+    if (!ok) ok = 工具.clickByDesc(配置.首页入口['88VIP'].desc, 800, 'home-vip-all');
+    if (!ok) ok = 工具.clickRatio(配置.首页入口['88VIP'].兜底点, 'home-vip-ratio');
   } catch (e1) { ok = false; }
 
   if (!ok) {
-    logW('88VIP入口：点击失败（可能入口文案/desc 变了，或首页没加载完）');
+    logW('vip entry click failed');
     return false;
   }
 
   safeSleep(1400);
 
-  // [Fix] 你强调：在 88VIP 会员中心，签完“去签到”会变成“明日领”。
-  //       点击“去签到”会跳到另一个页面，但那个页面“不需要管”。
-  //       所以：我们只做“回到会员中心 -> 看有没有明日领”。
+  // 你新增的“明日领”素材路径（验签兜底）
+  var imgTomorrow = '淘宝素材/淘宝_88VIP_每日签到_明日领/crop.png';
 
-  // 如果已经存在“明日领”，直接认为已签到
-  if (textExistsExact('明日领') || textExistsContains('明日领')) {
-    logI('88VIP：检测到【明日领】= 已签到（不再点去签到）');
-    safeBack('88VIP已签到回首页');
+  // 如果已经看到“明日领”，直接认为已签到
+  if (textHas('明日领')) {
+    logI('vip signed already: tomorrow');
+    safeBack('vip signed');
     return true;
   }
 
-  // 等待“去签到”出现
+  // 等待“去签到”出现（或直接出现明日领）
   var ready = waitForCondition(function () {
+    if (textHas(配置.VIP页.去签到.text)) return true;
+    if (textHas('明日领')) return true;
+
+    // 图片兜底
     try {
-      if (textContains(配置.VIP页.去签到.text).exists()) return true;
-      if (descContains(配置.VIP页.去签到.text).exists()) return true;
+      if (工具.requestScreenIfNeeded()) {
+        if (工具.findImageSafe(imgTomorrow, 0.82)) return true;
+      }
     } catch (e0) {}
 
-    // 兜底：如果直接出现“明日领”，也算完成
-    if (textExistsContains('明日领')) return true;
-
     return false;
-  }, 25000, '88VIP 会员中心加载');
+  }, 26000, 'vip center');
 
   if (!ready) {
-    logW('88VIP会员中心：加载超时 -> 回退');
-    safeBack('88VIP超时回退');
+    logW('vip center timeout');
+    safeBack('vip timeout');
     return false;
   }
 
-  if (textExistsContains('明日领')) {
-    logI('88VIP：会员中心已是【明日领】= 已签到');
-    safeBack('88VIP已签到回首页');
+  if (textHas('明日领')) {
+    logI('vip signed after wait: tomorrow');
+    safeBack('vip signed');
     return true;
   }
 
@@ -468,250 +562,224 @@ function flowVipSign() {
   try {
     var btn = textContains(配置.VIP页.去签到.text).findOne(1200);
     if (!btn) btn = descContains(配置.VIP页.去签到.text).findOne(1200);
-    if (btn) clicked = 工具.clickUiObject(btn, '88VIP-去签到(控件)');
+    if (btn) clicked = 工具.clickUiObject(btn, 'vip-go-sign');
   } catch (e2) {}
 
+  if (!clicked) clicked = clickByAnyImage([配置.VIP页.去签到.找图], 0.82, 'vip-go-sign-img');
   if (!clicked) {
-    clicked = clickByAnyImage([配置.VIP页.去签到.找图], 0.82, '88VIP-去签到(找图)');
+    try { clicked = 工具.clickRatio(配置.VIP页.去签到.兜底点, 'vip-go-sign-ratio'); } catch (e3) {}
   }
 
   if (!clicked) {
-    try { clicked = 工具.clickRatio(配置.VIP页.去签到.兜底点, '88VIP-去签到(兜底比例点)'); }
-    catch (e3) {}
-  }
-
-  if (!clicked) {
-    logW('88VIP：❌ 没找到“去签到”（可能已签到/文案变化/布局变化）');
-    safeBack('88VIP失败回退');
+    logW('vip go-sign click failed');
+    safeBack('vip fail');
     return false;
   }
 
-  logI('88VIP：✅ 已点击去签到（不处理跳转页，直接回退验签）');
+  logI('vip go-sign clicked, now back to center to verify');
   safeSleep(1500);
 
-  // 回退到会员中心（通常 1 次就够；不够再来 1 次）
-  safeBack('88VIP跳转页回退(1)');
-  safeSleep(1200);
+  // 不处理跳转页：直接 back 回会员中心
+  safeBack('vip back 1');
+  safeSleep(1000);
 
-  if (!(textExistsContains('去签到') || textExistsContains('明日领'))) {
-    safeBack('88VIP跳转页回退(2)');
-    safeSleep(1200);
+  // 有些机型要 back 两次
+  if (!textHas('去签到') && !textHas('明日领')) {
+    safeBack('vip back 2');
+    safeSleep(1000);
   }
 
   // 验签：明日领
   var okSigned = waitForCondition(function () {
-    return textExistsContains('明日领') || textExistsContains('已签到') || textExistsContains('明天再来');
-  }, 12000, '88VIP验签（明日领）');
+    if (textHas('明日领')) return true;
+    if (textHas('已签到')) return true;
 
-  if (okSigned) {
-    logI('88VIP：✅ 验签通过（明日领/已签到）');
-  } else {
-    logW('88VIP：⚠️ 未看到【明日领】（可能页面结构变了/网络慢/回退没回到会员中心）');
-  }
+    // 图片兜底
+    try {
+      if (工具.requestScreenIfNeeded()) {
+        if (工具.findImageSafe(imgTomorrow, 0.82)) return true;
+      }
+    } catch (e0) {}
 
-  safeBack('88VIP流程结束回首页');
+    return false;
+  }, 14000, 'vip verify');
+
+  if (okSigned) logI('vip verify ok');
+  else logW('vip verify not found');
+
+  safeBack('vip done');
   return true;
 }
 
-// ========================= 6) 红包签到 =========================
-// 关键点：
-// - 第一个签到：立即签到；成功后可能变成“继续领钱/继续领取”
-// - 第二个签到：进入“连续打卡”页面，点“点击签到”
-// - 你说失败原因：误点/弹出“继续领钱”的任务列表遮挡了连续打卡入口
-// 解决策略：
-// [Fix] 先识别“继续领钱/继续领取”= 已完成第一个签到，坚决不点击它
-// [Fix] 如果任务列表/底部面板弹出，先尝试“点空白/处理弹窗/back 一次”关闭遮挡
-function dismissPossibleTaskSheet(tag) {
-  // 这个函数不求100%准确，只做“轻量尝试”，避免你说的“疯狂横跳/疯狂滑动”
-  // 尝试顺序：
-  //  1) 通用弹窗处理
-  //  2) 点屏幕上方空白（很多底部面板会被点空白收起）
-  //  3) back 一次（如果只是面板，back 会收起；如果直接退出页面，后面还有 ensureHome 兜底）
-  try { if (弹窗.处理全部弹窗()) { logI(tag + ': 已处理通用弹窗'); return true; } } catch (e0) {}
-
-  try {
-    var x = parseInt(device.width * 0.50, 10);
-    var y = parseInt(device.height * 0.18, 10);
-    press(x, y, 60);
-    safeSleep(600);
-    logI(tag + ': 尝试点击空白收起面板');
-  } catch (e1) {}
-
-  try {
-    back();
-    safeSleep(700);
-    logI(tag + ': 尝试 back 收起面板');
-    return true;
-  } catch (e2) {
-    return false;
-  }
-}
-
+// =============================================================================
+// 6) 红包签到
+// =============================================================================
 function flowHongbaoSign() {
-  logI('=== 流程：红包签到 ===');
+  logI('FLOW: hongbao');
 
   if (!ensureHome()) {
-    logW('红包签到：回首页失败 -> 跳过');
+    logW('hb: skip, not home');
     return false;
   }
 
   // 点击首页入口：红包签到
   var ok = false;
   try {
-    ok = 工具.clickByDescInArea(配置.首页入口.红包签到.desc, 配置.首页入口.红包签到.区域, 1200, '首页-红包签到');
-    if (!ok) ok = 工具.clickByDesc(配置.首页入口.红包签到.desc, 800, '首页-红包签到(全局)');
-    if (!ok) ok = 工具.clickRatio(配置.首页入口.红包签到.兜底点, '首页-红包签到(兜底比例点)');
+    ok = 工具.clickByDescInArea(配置.首页入口.红包签到.desc, 配置.首页入口.红包签到.区域, 1200, 'home-hb');
+    if (!ok) ok = 工具.clickByDesc(配置.首页入口.红包签到.desc, 800, 'home-hb-all');
+    if (!ok) ok = 工具.clickRatio(配置.首页入口.红包签到.兜底点, 'home-hb-ratio');
   } catch (e1) { ok = false; }
 
   if (!ok) {
-    logW('红包签到入口：点击失败（可能入口文案/desc 变了，或首页没加载完）');
+    logW('hb entry click failed');
     return false;
   }
 
   safeSleep(1500);
 
-  // ------------------- A) 第一个签到：立即签到 -------------------
-  // [Fix] 如果已经出现“继续领钱/继续领取”，说明第一个签到已完成，不要点击它（会弹任务列表）
-  if (textExistsContains('继续领钱') || textExistsContains('继续领取')) {
-    logI('红包签到：检测到【继续领钱/继续领取】= 已完成第1次签到（不点击，避免任务列表）');
+  // 你新增的“继续领钱”素材（验签兜底）
+  var imgContinueMoney = '淘宝素材/淘宝_红包签到_继续领钱/crop.png';
+
+  // ------------------- A) 第1次签到：立即签到（或已是继续领钱） -------------------
+  // 如果已出现继续领钱/继续领取 => 已完成第1次签到，坚决不点击
+  if (textHas('继续领钱') || textHas('继续领取')) {
+    logI('hb first signed: continue money (do not click)');
   } else {
-    // 正常情况下点击“立即签到”
-    var clicked = clickByAnyImage([配置.红包签到页.立即签到.找图], 0.82, '红包签到-立即签到(找图)');
+    // 尝试点击立即签到
+    var clicked = clickByAnyImage([配置.红包签到页.立即签到.找图], 0.82, 'hb sign now');
     if (!clicked) {
-      try { clicked = 工具.clickRatio(配置.红包签到页.立即签到.兜底点, '红包签到-立即签到(兜底比例点)'); }
-      catch (e2) {}
+      try { clicked = 工具.clickRatio(配置.红包签到页.立即签到.兜底点, 'hb sign now ratio'); } catch (e2) {}
     }
 
-    if (clicked) logI('红包签到：✅ 已尝试点击立即签到（等待按钮变化确认）');
-    else logW('红包签到：⚠️ 未命中“立即签到”（可能已签到或按钮样式变化）');
+    if (clicked) logI('hb sign now clicked, verify');
+    else logW('hb sign now not found, maybe already signed');
 
-    // 等待它变成“继续领钱/继续领取”（不点）
+    // 等待出现继续领钱/继续领取（不点）
     waitForCondition(function () {
-      return textExistsContains('继续领钱') || textExistsContains('继续领取') || textExistsContains('已签到');
-    }, 12000, '红包第1次验签（继续领钱/继续领取）');
+      if (textHas('继续领钱') || textHas('继续领取') || textHas('已签到')) return true;
+
+      // 图片兜底
+      try {
+        if (工具.requestScreenIfNeeded()) {
+          if (工具.findImageSafe(imgContinueMoney, 0.82)) return true;
+        }
+      } catch (e0) {}
+
+      return false;
+    }, 14000, 'hb first verify');
   }
 
-  // 如果误点导致面板弹出，先尝试关闭遮挡
-  dismissPossibleTaskSheet('红包签到');
+  // 如果误弹了任务列表/底部面板：先收起
+  dismissPossibleSheet('hb');
 
-  // ------------------- B) 第二个签到：连续打卡 -------------------
-  // 你提供了 3 张“连续打卡入口”素材，进入同一页面，只是提高命中率。
-  var 连续打卡素材 = [
+  // ------------------- B) 第2次签到：连续打卡 -------------------
+  // 你提供了 3 张入口图，进入同一页面，只是提高命中率
+  var imgsContinueEntry = [
     配置.红包签到页.连续打卡入口.找图,
     '淘宝素材/淘宝_红包签到_连续打卡2/crop.png',
     '淘宝素材/淘宝_红包签到_连续打卡3/crop.png'
   ];
 
-  // 尝试进入连续打卡：最多 2 轮（每轮：找图/兜底点/滑动一次）
   var entered = false;
+
   for (var round = 1; round <= 2; round++) {
-    logI('红包签到：尝试进入连续打卡（第 ' + round + '/2 轮）');
+    logI('hb enter continue page round ' + round + '/2');
 
-    // 1) 优先找图
-    var goContinue = clickByAnyImage(连续打卡素材, 0.82, '红包-连续打卡入口(多素材)');
+    // 再次收起遮挡（很多时候“继续领钱”面板会反复出现）
+    dismissPossibleSheet('hb');
 
-    // 2) 兜底比例点
-    if (!goContinue) {
-      try { goContinue = 工具.clickRatio(配置.红包签到页.连续打卡入口.兜底点, '红包-连续打卡入口(兜底比例点)'); }
-      catch (e3) { goContinue = false; }
+    var go = clickByAnyImage(imgsContinueEntry, 0.82, 'hb continue entry');
+    if (!go) {
+      try { go = 工具.clickRatio(配置.红包签到页.连续打卡入口.兜底点, 'hb continue entry ratio'); } catch (e3) { go = false; }
     }
 
-    safeSleep(1300);
+    safeSleep(1200);
 
-    // 3) 验证是否进入连续打卡页：出现“点击签到”或对应找图
     entered = waitForCondition(function () {
+      // 连续打卡页的特征：出现“点击签到”
+      if (textHas(配置.红包签到页.连续打卡页_点击签到.text)) return true;
+
+      // 找图兜底
       try {
-        if (textContains(配置.红包签到页.连续打卡页_点击签到.text).exists()) return true;
-        if (descContains(配置.红包签到页.连续打卡页_点击签到.text).exists()) return true;
+        if (工具.requestScreenIfNeeded()) {
+          if (工具.findImageSafe(配置.红包签到页.连续打卡页_点击签到.找图, 0.82)) return true;
+        }
       } catch (e0) {}
 
-      try {
-        if (工具.requestScreenIfNeeded() && 工具.findImageSafe(配置.红包签到页.连续打卡页_点击签到.找图, 0.82)) return true;
-      } catch (e1) {}
-
       return false;
-    }, 22000, '连续打卡页加载');
+    }, 26000, 'hb continue page');
 
     if (entered) break;
 
-    // 还没进：说明可能入口在屏外/被遮挡 -> 轻量滑动一次再试
-    logW('连续打卡：未进入（可能入口被遮挡/在屏外），将轻量上滑一次再试');
+    logW('hb continue page not entered, gentle swipe once then retry');
     gentleSwipeUpOnce();
-
-    // 关闭可能弹出的面板
-    dismissPossibleTaskSheet('红包签到');
   }
 
   if (!entered) {
-    logW('红包签到：❌ 仍未进入连续打卡页（本轮结束，回退）');
-    safeBack('红包签到回退(1)');
-    safeBack('红包签到回退(2)');
+    logW('hb: cannot enter continue page');
+    safeBack('hb back1');
+    safeBack('hb back2');
     return false;
   }
 
-  // 在连续打卡页：点击“点击签到”（控件优先，找图兜底）
+  // 在连续打卡页：点击“点击签到”
   var signClicked = false;
   try {
     var btn = textContains(配置.红包签到页.连续打卡页_点击签到.text).findOne(1200);
     if (!btn) btn = descContains(配置.红包签到页.连续打卡页_点击签到.text).findOne(1200);
-    if (btn) signClicked = 工具.clickUiObject(btn, '连续打卡-点击签到(控件)');
+    if (btn) signClicked = 工具.clickUiObject(btn, 'hb continue sign');
   } catch (e4) {}
 
+  if (!signClicked) signClicked = clickByAnyImage([配置.红包签到页.连续打卡页_点击签到.找图], 0.82, 'hb continue sign img');
   if (!signClicked) {
-    signClicked = clickByAnyImage([配置.红包签到页.连续打卡页_点击签到.找图], 0.82, '连续打卡-点击签到(找图)');
-  }
-
-  if (!signClicked) {
-    try { signClicked = 工具.clickRatio(配置.红包签到页.连续打卡页_点击签到.兜底点, '连续打卡-点击签到(兜底比例点)'); }
-    catch (e5) { signClicked = false; }
+    try { signClicked = 工具.clickRatio(配置.红包签到页.连续打卡页_点击签到.兜底点, 'hb continue sign ratio'); } catch (e5) { signClicked = false; }
   }
 
   if (signClicked) {
-    logI('连续打卡：✅ 已执行点击签到（等待状态变化确认）');
+    logI('hb continue sign clicked, verify');
 
-    // 验签：常见变化（你后续如果提供“已签到/明日再来”等控件，我再加更准的判断）
     waitForCondition(function () {
-      // 1) 按钮消失/不可点
+      // 常见验签：按钮消失 或 出现已签到/明日
       try {
         if (!textContains(配置.红包签到页.连续打卡页_点击签到.text).exists()) return true;
       } catch (e0) {}
-      // 2) 出现“已签到/明天再来”等
-      return textExistsContains('已签到') || textExistsContains('明天') || textExistsContains('明日');
-    }, 12000, '连续打卡验签（按钮消失/已签到）');
+      if (textHas('已签到') || textHas('明日') || textHas('明天')) return true;
+      return false;
+    }, 14000, 'hb continue verify');
 
   } else {
-    logW('连续打卡：❌ 没找到“点击签到”（可能已签到/文案变化/布局变化）');
+    logW('hb continue sign not found');
   }
 
-  safeSleep(1200);
-  safeBack('连续打卡页回退');
-  safeBack('红包签到页回退');
+  safeBack('hb continue back');
+  safeBack('hb page back');
   return true;
 }
 
-// ========================= 7) 运行入口（被【TB】淘宝自动签到.js 调用） =========================
+// =============================================================================
+// 7) 运行入口（被【TB】淘宝自动签到.js 调用）
+// =============================================================================
 function 运行() {
   var t0 = now();
 
-  logI('脚本启动：淘宝自动签到');
-  logI('提示：悬浮日志不挡点击；如果没显示，请先开 AutoJs6 悬浮窗权限');
+  logI('start');
+  logI('tip: float log is touch-through (no block)');
 
   ensureAccessibility();
 
-  // 强杀淘宝（如果工具模块也会输出日志，属于正常）
-  try { 工具.forceStopTaobao(); } catch (e0) { logW('force-stop 异常：' + e0); }
+  // 强杀淘宝（不重复打印成功/失败，避免你困惑）
+  try { 工具.forceStopTaobao(); } catch (e0) { logW('force-stop error'); }
 
   safeSleep(1000);
 
   ensureTaobaoForeground();
 
-  // 找图需要截图权限：先申请一次（失败也不影响纯控件点击）
+  // 截图权限（找图必须）
   try {
-    if (工具.requestScreenIfNeeded()) logI('截图权限：✅ 可用（找图功能已启用）');
-    else logW('截图权限：❌ 不可用（找图将跳过，仅用控件/比例点兜底）');
+    if (工具.requestScreenIfNeeded && 工具.requestScreenIfNeeded()) logI('capture ok');
+    else logW('capture not ok, image match may fail');
   } catch (e1) {}
 
-  // 主线三流程
   try {
     flowCoinSign();
     try { 弹窗.处理全部弹窗(); } catch (e2) {}
@@ -723,14 +791,10 @@ function 运行() {
     try { 弹窗.处理全部弹窗(); } catch (e4) {}
 
   } catch (e5) {
-    logE('运行异常：' + e5);
+    logE('fatal: ' + e5);
   } finally {
-    var cost = now() - t0;
-    logI('全部流程结束，用时(ms)=' + cost);
-
-    // 给你留一点时间看悬浮日志（避免你以为没动就手动关）
+    logI('done, ms=' + (now() - t0));
     safeSleep(1500);
-
     try { 浮窗日志.close(); } catch (e6) {}
   }
 }
