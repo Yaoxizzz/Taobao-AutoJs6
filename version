@@ -1,0 +1,8 @@
+{
+  "version": "1.0.3",
+  "updateFile": [
+    {"remote": "modules/TB_配置.js", "local": "modules/TB_配置.js", "time": "2025-12-18 15:10:00"},
+    {"remote": "modules/TB_淘宝签到.js", "local": "modules/TB_淘宝签到.js", "time": "2025-12-18 15:12:00"},
+    {"remote": "【TB】淘宝自动签到.js", "local": "【TB】淘宝自动签到.js", "time": "2025-12-18 15:12:30"}
+  ]
+}
